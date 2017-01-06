@@ -8,6 +8,6 @@ Based on https://github.com/achesnais/clj-jupyter
 
 ## License
 
-Copyright © 2016 Stephen Clayton
+Copyright © 2017 Stephen Clayton
 
 Distributed under the Eclipse Public License version 1.0.
