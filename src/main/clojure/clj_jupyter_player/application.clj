@@ -46,19 +46,26 @@
         shutdown-signal (promise)
         transport "tcp"
         ip "127.0.0.1"
-        secret-key (str (UUID/randomUUID))]
+        secret-key (str (UUID/randomUUID))
+        ports (shell/reserve-ports 5)
+        port-order (-> ports keys vec)]
     (try
-      (let [shell (shell/start {:transport transport :ip ip :key secret-key} shutdown-signal)
+      (let [shell (shell/start {:ports ports
+                                :port-order port-order
+                                :transport transport
+                                :ip ip
+                                :key secret-key} shutdown-signal)
             connection-config {"transport" transport
                                "kernel-name" kernel-name
-                               "stdin-port" 40681
                                "ip" ip
-                               "iopub-port" (:iopub-port shell)
                                "key" secret-key
-                               "hb-port" 43090
                                "signature-scheme" "hmac-sha256"
-                               "control-port" 38939
-                               "shell-port" 57154}
+                               "stdin-port" (get port-order 0)
+                               "iopub-port" (get port-order 1)
+                               "hb-port" (get port-order 2)
+                               "control-port" (get port-order 3)
+                               "shell-port" (get port-order 4)
+                               }
             _ (with-open [w (io/writer connection-file)]
                 (json/write connection-config w))]
         (log/info "start sleep")

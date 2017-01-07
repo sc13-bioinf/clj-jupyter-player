@@ -3,6 +3,7 @@
             [clj-jupyter-player.util :as util]
             [taoensso.timbre :as log])
   (:import java.net.ServerSocket
+           java.io.Closeable
            javax.crypto.Mac
            javax.crypto.spec.SecretKeySpec
            [zmq Msg SocketBase ZMQ Utils]))
@@ -32,35 +33,45 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Sockets
 
-(defn find-open-port
-  "Find an open port"
-  []
-  (with-open [tmp-socket (ServerSocket. 0)]
-    (.getLocalPort tmp-socket)))
+(defn reserve-port
+  "We obtain a free local port"
+  [^ServerSocket tmp-socket]
+  [(.getLocalPort tmp-socket) tmp-socket])
+
+(defn reserve-ports
+  "Returns a map of temporary sockets that are reserving a local port. It is the callers responsibility to close them."
+  [n]
+  (into {} (map reserve-port) (repeatedly n #(ServerSocket. 0))))
+
+(defn release-port
+  [ports port]
+  (.close ^java.io.Closeable (get ports port))
+  port)
 
 (defrecord SocketSystem [config]
   ILifecycle
-  (init [{{:keys [transport ip]} :config
-          :as                                          this}]
+  (init [{{:keys [ports port-order transport ip]} :config
+           :as                                    this}]
     (let [ctx          (ZMQ/createContext)
           shell-socket (ZMQ/socket ctx ZMQ/ZMQ_ROUTER)
           iopub-socket (ZMQ/socket ctx ZMQ/ZMQ_PUB)
           addr         (partial str transport "://" ip ":")
-          shell-port (find-open-port)
+          shell-port (release-port ports (get port-order 4))
           _ (ZMQ/bind shell-socket (addr shell-port))
           _ (ZMQ/setSocketOption shell-socket ZMQ/ZMQ_RCVTIMEO (int 250))
-          iopub-port (find-open-port)
+          iopub-port (release-port ports (get port-order 1))
           _ (ZMQ/bind iopub-socket (addr iopub-port))]
       (assoc this
              :ctx ctx
-             :shell-port shell-port
+             :ports ports
              :shell-socket shell-socket
-             :iopub-port iopub-port
              :iopub-socket iopub-socket)))
-  (close [{:keys [ctx] :as this}]
-    (doseq [socket (vals (dissoc this :ctx :config :shell-port :iopub-port))]
+  (close [{:keys [ctx ports] :as this}]
+    (doseq [socket (vals (dissoc this :ctx :config :ports))]
       (ZMQ/close socket))
     (ZMQ/term ctx)
+    (doseq [port (keys ports)]
+      (release-port ports port))
     (log/info "All shell sockets closed.")))
 
 (defn create-sockets [config]
