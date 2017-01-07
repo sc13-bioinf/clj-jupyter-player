@@ -2,7 +2,7 @@
   (:require [clojure.pprint :as pprint]
             [taoensso.timbre :as log]
             [clj-jupyter-player.util :as util])
-  (:import java.net.ServerSocket
+  (:import [java.net ServerSocket InetSocketAddress]
            java.io.Closeable
            javax.crypto.Mac
            javax.crypto.spec.SecretKeySpec
@@ -29,6 +29,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Sockets
 
+(defn available-local-socket
+  []
+  (let [ss (ServerSocket.)
+        _ (.setReuseAddress ss true)
+        _ (.bind ss (InetSocketAddress. "127.0.0.1" 0))]
+    ss))
+
 (defn reserve-port
   "We obtain a free local port"
   [^ServerSocket tmp-socket]
@@ -37,7 +44,7 @@
 (defn reserve-ports
   "Returns a map of temporary sockets that are reserving a local port. It is the callers responsibility to close them."
   [n]
-  (into {} (map reserve-port) (repeatedly n #(ServerSocket. 0))))
+  (into {} (map reserve-port) (repeatedly n available-local-socket)))
 
 (defn release-port
   [ports port]
@@ -55,16 +62,38 @@
           control-socket (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           shell-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           addr         (partial str transport "://" ip ":")
-          shell-port (release-port ports (get port-order 4))
-          _ (ZMQ/bind shell-socket (addr shell-port))
-          _ (ZMQ/setSocketOption shell-socket ZMQ/ZMQ_RCVTIMEO (int 250))
-          iopub-port (release-port ports (get port-order 1))
-          _ (ZMQ/bind iopub-socket (addr iopub-port))]
+          stdin-port   (get port-order 0)
+          iopub-port   (get port-order 1)
+          hb-port      (get port-order 2)
+          control-port (get port-order 3)
+          shell-port   (get port-order 4)
+          ;;_ (ZMQ/setSocketOption shell-socket ZMQ/ZMQ_RCVTIMEO (int 250))
+          stdin-socket-connected   (.connect stdin-socket   (addr stdin-port))
+          _ (log/info "stdin-socket-connected returned")
+          iopub-socket-connected   (.connect iopub-socket   (addr iopub-port))
+          hb-socket-connected      (.connect hb-socket      (addr hb-port))
+          control-socket-connected (.connect control-socket (addr control-port))
+          shell-socket-connected   (.connect shell-socket   (addr shell-port))
+          _ (when (every? identity [stdin-socket-connected
+                                    iopub-socket-connected
+                                    hb-socket-connected
+                                    control-socket-connected
+                                    shell-socket-connected])
+              (log/info "all sockets connected"))
+          _ (log/info [stdin-socket-connected
+                                    iopub-socket-connected
+                                    hb-socket-connected
+                                    control-socket-connected
+                                    shell-socket-connected])
+          ]
       (assoc this
              :ctx ctx
              :ports ports
-             :shell-socket shell-socket
-             :iopub-socket iopub-socket)))
+             :stdin-socket   stdin-socket
+             :iopub-socket   iopub-socket
+             :hb-socket      hb-socket
+             :control-socket control-socket
+             :shell-socket   shell-socket)))
   (close [{:keys [ctx ports] :as this}]
     (doseq [socket (vals (dissoc this :ctx :config :ports))]
       (ZMQ/close socket))

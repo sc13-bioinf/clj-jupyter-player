@@ -51,22 +51,18 @@
         ports (shell/reserve-ports 5)
         port-order (-> ports keys vec)]
     (try
-      (let [shell (shell/start {:ports ports
-                                :port-order port-order
-                                :transport transport
-                                :ip ip
-                                :key secret-key} shutdown-signal)
-            connection-config {"transport" transport
+      (let [connection-config {"transport" transport
                                "kernel-name" kernel-name
                                "ip" ip
                                "key" secret-key
                                "signature-scheme" "hmac-sha256"
-                               "stdin-port" (get port-order 0)
-                               "iopub-port" (get port-order 1)
-                               "hb-port" (get port-order 2)
-                               "control-port" (get port-order 3)
-                               "shell-port" (get port-order 4)
+                               "stdin-port"   (shell/release-port ports (get port-order 0))
+                               "iopub-port"   (shell/release-port ports (get port-order 1))
+                               "hb-port"      (shell/release-port ports (get port-order 2))
+                               "control-port" (shell/release-port ports (get port-order 3))
+                               "shell-port"   (shell/release-port ports (get port-order 4))
                                }
+            _ (log/info "connection config: " connection-config)
             _ (with-open [w (io/writer connection-file)]
                 (json/write connection-config w))
             kernel-config (with-open [r (io/reader kernel-config-file)]
@@ -75,6 +71,11 @@
                                   :connection-file connection-file
                                   :tmp-dir tmp-dir} shutdown-signal)
             _ (log/info "got started kernel: " kernel)
+            shell (shell/start {:ports ports
+                                :port-order port-order
+                                :transport transport
+                                :ip ip
+                                :key secret-key} shutdown-signal)
             notebook (with-open [r (io/reader notebook-file)]
                        (json/read r))]
         (log/info "start sleep")
