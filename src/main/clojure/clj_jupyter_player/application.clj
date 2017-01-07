@@ -1,7 +1,10 @@
 (ns clj-jupyter-player.application
   (:require [clojure.string :as str]
+            [clojure.data.json :as json]
             [clojure.java.io :as io]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [clj-jupyter-player.shell :as shell])
+  (:import java.util.UUID))
 
 (defn mk-tmp-dir
   "Create a tmp dir, by default based on java.io.tmpdir"
@@ -35,12 +38,32 @@
     (doseq [f (reverse files)]
       (io/delete-file f))))
 
+
 (defn app
-  [kernel-config-file notebook-file]
-  (let [tmp-dir (mk-tmp-dir :base-name "clj-jupyter-player")]
+  [kernel-name kernel-config-file notebook-file]
+  (let [tmp-dir (mk-tmp-dir :base-name "clj-jupyter-player")
+        connection-file (io/file tmp-dir "connection.json")
+        shutdown-signal (promise)
+        transport "tcp"
+        ip "127.0.0.1"
+        secret-key (str (UUID/randomUUID))]
     (try
-      (let [kernel :k]
-        (throw (Exception. "out of cheese")))
+      (let [shell (shell/start {:transport transport :ip ip :key secret-key} shutdown-signal)
+            connection-config {"transport" transport
+                               "kernel-name" kernel-name
+                               "stdin-port" 40681
+                               "ip" ip
+                               "iopub-port" (:iopub-port shell)
+                               "key" secret-key
+                               "hb-port" 43090
+                               "signature-scheme" "hmac-sha256"
+                               "control-port" 38939
+                               "shell-port" 57154}
+            _ (with-open [w (io/writer connection-file)]
+                (json/write connection-config w))]
+        (log/info "start sleep")
+        (Thread/sleep 20000)
+        )
       (catch Exception e
         (log/error (.getMessage e)))
       (finally (recursive-delete-dir tmp-dir)))))

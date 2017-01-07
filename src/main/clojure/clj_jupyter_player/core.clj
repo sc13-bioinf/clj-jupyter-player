@@ -36,7 +36,8 @@
       (nil? (:kernel-config-path options)) (usage "Please supply kernel config path" (:summary opts))
       (nil? (:notebook-path options)) (usage "Please supply notebook path" (:summary opts))
       (and (contains? options :kernel-config-path)
-           (contains? options :notebook-path)) (application/app (:kernel-config-path options)
+           (contains? options :notebook-path)) (application/app "random-kernel-name"
+                                                                (:kernel-config-path options)
                                                                 (:notebook-path options))
       :else (usage "" (:summary opts)))))
 
