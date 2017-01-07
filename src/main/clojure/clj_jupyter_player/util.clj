@@ -6,6 +6,13 @@
   (:import [java.io StringWriter PrintWriter]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; LifeCycle
+
+(defprotocol ILifecycle
+  (init [this])
+  (close [this]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Data format conversion
 
 (defn snake->kebab [string]

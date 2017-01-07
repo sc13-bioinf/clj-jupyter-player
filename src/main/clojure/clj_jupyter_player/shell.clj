@@ -1,7 +1,7 @@
 (ns clj-jupyter-player.shell
   (:require [clojure.pprint :as pprint]
-            [clj-jupyter-player.util :as util]
-            [taoensso.timbre :as log])
+            [taoensso.timbre :as log]
+            [clj-jupyter-player.util :as util])
   (:import java.net.ServerSocket
            java.io.Closeable
            javax.crypto.Mac
@@ -9,10 +9,6 @@
            [zmq Msg SocketBase ZMQ Utils]))
 
 (set! *warn-on-reflection* true)
-
-(defprotocol ILifecycle
-  (init [this])
-  (close [this]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Security
@@ -49,12 +45,15 @@
   port)
 
 (defrecord SocketSystem [config]
-  ILifecycle
+  util/ILifecycle
   (init [{{:keys [ports port-order transport ip]} :config
            :as                                    this}]
-    (let [ctx          (ZMQ/createContext)
-          shell-socket (ZMQ/socket ctx ZMQ/ZMQ_ROUTER)
-          iopub-socket (ZMQ/socket ctx ZMQ/ZMQ_PUB)
+    (let [ctx            (ZMQ/createContext)
+          stdin-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
+          iopub-socket   (ZMQ/socket ctx ZMQ/ZMQ_PUB)
+          hb-socket      (ZMQ/socket ctx ZMQ/ZMQ_REQ)
+          control-socket (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
+          shell-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           addr         (partial str transport "://" ip ":")
           shell-port (release-port ports (get port-order 4))
           _ (ZMQ/bind shell-socket (addr shell-port))
@@ -75,7 +74,7 @@
     (log/info "All shell sockets closed.")))
 
 (defn create-sockets [config]
-  (init (->SocketSystem config)))
+  (util/init (->SocketSystem config)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Messaging

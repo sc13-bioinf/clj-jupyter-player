@@ -4,6 +4,7 @@
             [clojure.java.io :as io]
             [taoensso.timbre :as log]
             [clj-jupyter-player.shell :as shell]
+            [clj-jupyter-player.kernel :as kernel]
             [clj-jupyter-player.util :as util])
   (:import java.util.UUID))
 
@@ -39,7 +40,6 @@
     (doseq [f (reverse files)]
       (io/delete-file f))))
 
-
 (defn app
   [kernel-name kernel-config-file notebook-file]
   (let [tmp-dir (mk-tmp-dir :base-name "clj-jupyter-player")
@@ -69,6 +69,12 @@
                                }
             _ (with-open [w (io/writer connection-file)]
                 (json/write connection-config w))
+            kernel-config (with-open [r (io/reader kernel-config-file)]
+                            (json/read r))
+            kernel (kernel/start {:kernel-config kernel-config
+                                  :connection-file connection-file
+                                  :tmp-dir tmp-dir} shutdown-signal)
+            _ (log/info "got started kernel: " kernel)
             notebook (with-open [r (io/reader notebook-file)]
                        (json/read r))]
         (log/info "start sleep")
