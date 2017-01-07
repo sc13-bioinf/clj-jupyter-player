@@ -3,7 +3,8 @@
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]
-            [clj-jupyter-player.shell :as shell])
+            [clj-jupyter-player.shell :as shell]
+            [clj-jupyter-player.util :as util])
   (:import java.util.UUID))
 
 (defn mk-tmp-dir
@@ -67,10 +68,14 @@
                                "shell-port" (get port-order 4)
                                }
             _ (with-open [w (io/writer connection-file)]
-                (json/write connection-config w))]
+                (json/write connection-config w))
+            notebook (with-open [r (io/reader notebook-file)]
+                       (json/read r))]
         (log/info "start sleep")
         (Thread/sleep 20000)
+        (doseq [cell (get notebook "cells")]
+          (log/info "cell: " cell))
         )
       (catch Exception e
-        (log/error (.getMessage e)))
+        (log/error (util/stack-trace-to-string e)))
       (finally (recursive-delete-dir tmp-dir)))))

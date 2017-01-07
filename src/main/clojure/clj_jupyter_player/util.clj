@@ -2,7 +2,8 @@
   (:require [clojure
              [string :as string]
              [walk :as walk]]
-            [clojure.data.json :as json]))
+            [clojure.data.json :as json])
+  (:import [java.io StringWriter PrintWriter]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Data format conversion
@@ -30,3 +31,15 @@
 
 (defn now []
   (.format iso-fmt (java.util.Date.)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Exceptions
+
+(defn stack-trace-to-string
+  "Returns a string containing the output of .printStackTrace"
+  [t]
+  (let [sw (StringWriter.)
+        pw (PrintWriter. sw)
+        _ (.printStackTrace t pw)]
+    (.toString sw)))
+
