@@ -2,10 +2,12 @@
   (:require [clojure.string :as str]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
+            [clojure.core.async :as async]
             [taoensso.timbre :as log]
             [clj-jupyter-player.shell :as shell]
             [clj-jupyter-player.kernel :as kernel]
-            [clj-jupyter-player.util :as util])
+            [clj-jupyter-player.util :as util]
+            [clj-jupyter-player.cell :as cell])
   (:import java.util.UUID))
 
 (defn mk-tmp-dir
@@ -71,18 +73,20 @@
                                   :connection-file connection-file
                                   :tmp-dir tmp-dir} shutdown-signal)
             _ (log/info "got started kernel: " kernel)
-            shell (shell/start {:ports ports
+            shell-channel (async/chan)
+            shell (shell/start {:ch shell-channel
+                                :ports ports
                                 :port-order port-order
                                 :transport transport
                                 :ip ip
-                                :key secret-key} shutdown-signal)
+                                :secret-key secret-key
+                                :session (str (UUID/randomUUID))} shutdown-signal)
             notebook (with-open [r (io/reader notebook-file)]
                        (json/read r))]
         (log/info "start sleep")
-        (Thread/sleep 20000)
+        (Thread/sleep 10000)
         (doseq [cell (get notebook "cells")]
-          (log/info "cell: " cell))
-        )
+          (cell/execute shell-channel cell)))
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
       (finally (recursive-delete-dir tmp-dir)))))

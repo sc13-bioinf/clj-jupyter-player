@@ -7,7 +7,7 @@
                  [org.clojure/clojure "1.8.0"]
                  [org.clojure/data.json "0.2.6"]
                  [org.clojure/tools.cli "0.3.3"]
-                 [org.clojure/tools.nrepl "0.2.12"]
+                 [org.clojure/core.async "0.2.385"]
                  [org.zeromq/jeromq "0.3.5"]]
   :main clj-jupyter-player.core
   :source-paths ["src/main/clojure"]

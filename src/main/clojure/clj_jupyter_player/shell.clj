@@ -1,8 +1,10 @@
 (ns clj-jupyter-player.shell
   (:require [clojure.pprint :as pprint]
+            [clojure.core.async :as async]
             [taoensso.timbre :as log]
             [clj-jupyter-player.util :as util])
   (:import [java.net ServerSocket InetSocketAddress]
+           [java.util UUID]
            java.io.Closeable
            javax.crypto.Mac
            javax.crypto.spec.SecretKeySpec
@@ -53,9 +55,10 @@
 
 (defrecord SocketSystem [config]
   util/ILifecycle
-  (init [{{:keys [ports port-order transport ip]} :config
+  (init [{{:keys [ports port-order transport ip secret-key]} :config
            :as                                    this}]
-    (let [ctx            (ZMQ/createContext)
+    (let [signer          (signer-fn secret-key)
+          ctx            (ZMQ/createContext)
           stdin-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           iopub-socket   (ZMQ/socket ctx ZMQ/ZMQ_PUB)
           hb-socket      (ZMQ/socket ctx ZMQ/ZMQ_REQ)
@@ -87,6 +90,7 @@
                                     shell-socket-connected])
           ]
       (assoc this
+             :signer signer
              :ctx ctx
              :ports ports
              :stdin-socket   stdin-socket
@@ -95,7 +99,7 @@
              :control-socket control-socket
              :shell-socket   shell-socket)))
   (close [{:keys [ctx ports] :as this}]
-    (doseq [socket (vals (dissoc this :ctx :config :ports))]
+    (doseq [socket (vals (dissoc this :signer :ctx :config :ports))]
       (ZMQ/close socket))
     (ZMQ/term ctx)
     (doseq [port (keys ports)]
@@ -150,7 +154,8 @@
 ;;; Handler
 
 (defn response-map [config {:keys [shell-socket iopub-socket]} shutdown-signal]
-  (let [signer          (signer-fn (:key config))
+  ;;(log/info "response map config: " config)
+  (let [signer          (signer-fn (:secret-key config))
         execution-count (volatile! 0)]
     {}))
 
@@ -163,9 +168,53 @@
         (log/info "No handler for" msg-type)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Create messsages
+
+(defn create-header
+  [session msg-type]
+  {"msg_id" (str (UUID/randomUUID))
+   "username" "clj-jupyter-player"
+   "session" session
+   "date" (util/now)
+   "msg_type" msg-type
+   "version" "5.0"})
+
+
+(defn create-execute-request-msg
+  [session code]
+  (let [header (create-header session "execute_request")
+        parent-header {}
+        metadata {}
+        content {"code" code
+                 "silent" false
+                 "store_history" true
+                 "user_expressions" {}
+                 "allow_stdin" false
+                 "stop_on_error" true}]
+    {:header header
+     :parent-header parent-header
+     :metadata metadata
+     :content content}))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Dispatch
+
+(defmulti command :command)
+(defmethod command :send [{:keys [shell-socket signer session source]}]
+  (let [;;_ (log/info "sending: " source)
+        msg (create-execute-request-msg session (first source))
+        ;;_ (log/info "msg: " msg)
+        ]
+    (send-message shell-socket msg signer)
+    true))
+(defmethod command :stop [_] false)
+(defmethod command :default [_] (log/error "Failed to understand your command") true)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Worker
 
 (defn start [config shutdown-signal]
+  (log/info "config: " config)
   (future
     (log/info "Starting shell...")
     (try
@@ -176,8 +225,14 @@
               shell-socket (:shell-socket socket-system)]
           (log/debug "Entering loop...")
           (while (not (realized? shutdown-signal))
+            (async/go-loop [request (async/<! (:ch config))]
+              (if (command (assoc request :signer (:signer socket-system)
+                                          :session (:session config)
+                                          :shell-socket shell-socket))
+                (recur (async/<! (:ch config)))
+                (log/info "shutdown request listener")))
             (when-let [msg (recv-message shell-socket)]
               (handler msg)))))
-      (catch Exception e (log/debug e))
+      (catch Exception e (log/debug (util/stack-trace-to-string e)))
       (finally
         (deliver shutdown-signal true)))))
