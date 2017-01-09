@@ -55,24 +55,18 @@
 
 (defrecord SocketSystem [config]
   util/ILifecycle
-  (init [{{:keys [ports port-order transport ip secret-key]} :config
+  (init [{{:keys [stdin-port iopub-port hb-port control-port shell-port transport ip secret-key]} :config
            :as                                    this}]
     (let [signer          (signer-fn secret-key)
           ctx            (ZMQ/createContext)
           stdin-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
-          iopub-socket   (ZMQ/socket ctx ZMQ/ZMQ_PUB)
+          iopub-socket   (ZMQ/socket ctx ZMQ/ZMQ_SUB)
           hb-socket      (ZMQ/socket ctx ZMQ/ZMQ_REQ)
           control-socket (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           shell-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           addr         (partial str transport "://" ip ":")
-          stdin-port   (get port-order 0)
-          iopub-port   (get port-order 1)
-          hb-port      (get port-order 2)
-          control-port (get port-order 3)
-          shell-port   (get port-order 4)
           ;;_ (ZMQ/setSocketOption shell-socket ZMQ/ZMQ_RCVTIMEO (int 250))
           stdin-socket-connected   (.connect stdin-socket   (addr stdin-port))
-          _ (log/info "stdin-socket-connected returned")
           iopub-socket-connected   (.connect iopub-socket   (addr iopub-port))
           hb-socket-connected      (.connect hb-socket      (addr hb-port))
           control-socket-connected (.connect control-socket (addr control-port))
@@ -82,17 +76,10 @@
                                     hb-socket-connected
                                     control-socket-connected
                                     shell-socket-connected])
-              (log/info "all sockets connected"))
-          _ (log/info [stdin-socket-connected
-                                    iopub-socket-connected
-                                    hb-socket-connected
-                                    control-socket-connected
-                                    shell-socket-connected])
-          ]
+              (log/info "all sockets connected"))]
       (assoc this
              :signer signer
              :ctx ctx
-             :ports ports
              :stdin-socket   stdin-socket
              :iopub-socket   iopub-socket
              :hb-socket      hb-socket
@@ -102,8 +89,6 @@
     (doseq [socket (vals (dissoc this :signer :ctx :config :ports))]
       (ZMQ/close socket))
     (ZMQ/term ctx)
-    (doseq [port (keys ports)]
-      (release-port ports port))
     (log/info "All shell sockets closed.")))
 
 (defn create-sockets [config]
@@ -142,9 +127,11 @@
                 (map util/json->edn data))
         (assoc :signature sign :identities ids))))
 
-(defn recv-message [socket]
+(defn recv-message [^SocketBase socket]
+  (log/info "recv-message socket: " socket " checkTag: " (.checkTag socket))
   (loop [msg []]
-    (when-let [blob (ZMQ/recv socket 0)]
+    (log/info "recv-message-loop: " msg)
+    (when-let [blob (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))]
       (let [msg (conj msg blob)]
         (if (receive-more? socket)
           (recur msg)
@@ -222,17 +209,34 @@
         (let [handler      (handler-fn config
                                        (dissoc socket-system :config :ctx)
                                        shutdown-signal)
-              shell-socket (:shell-socket socket-system)]
+              iopub-socket (:iopub-socket socket-system)
+              shell-socket (:shell-socket socket-system)
+              ;;_ (log/info "iopub-socket: " iopub-socket)
+              ;;_ (log/info "shell-socket: " shell-socket)
+              ;;_ (log/info "shell-socket check tag: " (.checkTag ^SocketBase shell-socket))
+              ;;_ (log/info "iopub-socket check tag: " (.checkTag iopub-socket))
+              ]
           (log/debug "Entering loop...")
-          (while (not (realized? shutdown-signal))
-            (async/go-loop [request (async/<! (:ch config))]
-              (if (command (assoc request :signer (:signer socket-system)
-                                          :session (:session config)
-                                          :shell-socket shell-socket))
-                (recur (async/<! (:ch config)))
-                (log/info "shutdown request listener")))
-            (when-let [msg (recv-message shell-socket)]
-              (handler msg)))))
+          (async/go-loop [shutdown (realized? shutdown-signal)]
+            (if shutdown
+              (log/info "shutdown response listener")
+              (do
+                (log/info "call recv-message")
+                (when-let [msg (recv-message shell-socket)]
+                  (handler msg))
+                (log/info "is blocking?")
+                (when-let [msg (recv-message iopub-socket)]
+                  (handler msg))
+                (recur (realized? shutdown-signal)))))
+          (async/go-loop [request (async/<! (:ch config))]
+            (if (command (assoc request :signer (:signer socket-system)
+                                        :session (:session config)
+                                        :shell-socket shell-socket))
+              (recur (async/<! (:ch config)))
+              (log/info "shutdown request listener"))))
+        ;; hang until we get shutdown signal
+        (while (not (realized? shutdown-signal)))
+        )
       (catch Exception e (log/debug (util/stack-trace-to-string e)))
       (finally
         (deliver shutdown-signal true)))))
