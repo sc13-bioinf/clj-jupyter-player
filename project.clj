@@ -8,6 +8,7 @@
                  [org.clojure/data.json "0.2.6"]
                  [org.clojure/tools.cli "0.3.3"]
                  [org.clojure/core.async "0.2.385"]
+                 [datascript "0.15.5"]
                  [org.zeromq/jeromq "0.3.5"]]
   :main clj-jupyter-player.core
   :source-paths ["src/main/clojure"]

@@ -3,7 +3,8 @@
              [string :as string]
              [walk :as walk]]
             [clojure.data.json :as json]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [datascript.core :as d])
   (:import [java.io StringWriter PrintWriter]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -84,3 +85,12 @@
             (throw (Exception. "Attempted to delete '/[DIR]'")))]
     (doseq [f (reverse files)]
       (io/delete-file f))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Datascript
+
+(defn update-db
+  [conn e k v]
+  (if (nil? (d/entity (d/db conn) e))
+    (throw (Exception. "update-app-state failed, entity not found for " e))
+    (d/transact! conn [[:db/add e k v]])))

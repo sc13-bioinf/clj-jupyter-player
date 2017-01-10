@@ -2,8 +2,10 @@
   (:require [clojure.pprint :as pprint]
             [clojure.core.async :as async]
             [taoensso.timbre :as log]
-            [clj-jupyter-player.util :as util])
-  (:import [java.net ServerSocket InetSocketAddress]
+            [clj-jupyter-player.util :as util]
+            [datascript.core :as d])
+  (:import [java.util Date]
+           [java.net ServerSocket InetSocketAddress]
            [java.util UUID]
            java.io.Closeable
            javax.crypto.Mac
@@ -65,7 +67,6 @@
           control-socket (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           shell-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           addr         (partial str transport "://" ip ":")
-          ;;_ (ZMQ/setSocketOption shell-socket ZMQ/ZMQ_RCVTIMEO (int 250))
           stdin-socket-connected   (.connect stdin-socket   (addr stdin-port))
           iopub-socket-connected   (.connect iopub-socket   (addr iopub-port))
           hb-socket-connected      (.connect hb-socket      (addr hb-port))
@@ -145,10 +146,10 @@
   (async/go-loop [blob (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
                   msg []
                   shutdown? (async/poll! ch-close)]
-                 (when (not (nil? blob))
-                   (log/info "blob: " blob)
-                   (log/info "msg: " msg)
-                   (log/info "shutdown?: " shutdown?))
+                 ;;(when (not (nil? blob))
+                 ;;  (log/info "blob: " blob)
+                 ;;  (log/info "msg: " msg)
+                 ;;  (log/info "shutdown?: " shutdown?))
 
                  (if (nil? blob)
                    (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
@@ -169,14 +170,33 @@
 
 (defn response-map [config {:keys [shell-socket iopub-socket]} shutdown-signal]
   ;;(log/info "response map config: " config)
-  (let [signer          (signer-fn (:secret-key config))
-        execution-count (volatile! 0)]
-    {}))
+  (let [signer          (signer-fn (:secret-key config))]
+    {"status" (fn [{{:keys [session msg-id]} :parent-header
+                    {:keys [execution-state]}  :content}]
+                (when (= (:session config) session)
+                  (d/transact! (:conn config) [[:db/add -1 :jupyter.response/execution-state execution-state]
+                                               [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))
+     "execute_input" (fn [{{:keys [session msg-id]} :parent-header
+                           {:keys [execution-count code]}  :content}])
+     "execute_reply" (fn [{{:keys [session msg-id]}         :parent-header
+                           {:keys [status execution-count]} :content
+                           :as msg}]
+                       ;;(log/info "execute_reply: " msg)
+                       (when (= (:session config) session)
+                         (d/transact! (:conn config) [[:db/add -1 :jupyter.response/status status]
+                                                      [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))
+     "stream" (fn [{{:keys [session msg-id]} :parent-header
+                    content                  :content
+                    :as msg}]
+                ;;(log/info "stream: " msg)
+                (when (= (:session config) session)
+                  (d/transact! (:conn config) [[:db/add -1 :jupyter.response/stream content]
+                                               [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))}))
 
 (defn handler-fn [config socket-map shutdown-signal]
   (let [msg-type->response (response-map config socket-map shutdown-signal)]
     (fn [{{:keys [msg-type]} :header :as msg}]
-      (log/info "Handling" msg)
+      ;;(log/info "Handling" msg)
       (if-let [handler (msg-type->response msg-type)]
         (handler msg)
         (log/info "No handler for" msg-type)))))
@@ -215,11 +235,14 @@
 ;;; Dispatch
 
 (defmulti command :command)
-(defmethod command :send [{:keys [shell-socket signer session source]}]
+(defmethod command :send [{:keys [shell-socket signer session source conn cell-eid]}]
   (let [;;_ (log/info "sending: " source)
         msg (create-execute-request-msg session (first source))
         ;;_ (log/info "msg: " msg)
         ]
+    (d/transact! conn [[:db/add -1 :jupyter/msg-id (get-in msg [:header "msg_id"])]
+                       [:db/add -1 :jupyter.player/sent (Date.)]
+                       [:db/add cell-eid :notebook.cell.player/execute-request -1]])
     (send-message shell-socket msg signer)
     true))
 (defmethod command :stop [_] false)
@@ -266,9 +289,11 @@
           ;;        (handler msg))
           ;;      (recur (realized? shutdown-signal)))))
           (async/go-loop [request (async/<! (:ch config))]
+            ;;(log/info "current notebook: " (d/pull @(:conn config) '[* {:notebook/cells [*]}] [:db/ident :notebook]))
             (if (command (assoc request :signer (:signer socket-system)
                                         :session (:session config)
-                                        :shell-socket shell-socket))
+                                        :shell-socket shell-socket
+                                        :conn (:conn config)))
               (recur (async/<! (:ch config)))
               (log/info "shutdown request listener"))))
         ;; hang until we get shutdown signal

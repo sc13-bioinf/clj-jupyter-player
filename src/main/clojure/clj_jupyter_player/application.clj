@@ -4,6 +4,7 @@
             [clojure.java.io :as io]
             [clojure.core.async :as async]
             [taoensso.timbre :as log]
+            [datascript.core :as d]
             [clj-jupyter-player.shell :as shell]
             [clj-jupyter-player.kernel :as kernel]
             [clj-jupyter-player.util :as util]
@@ -13,8 +14,18 @@
 (defn run-notebook
   [tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file]
   (try
-      (let [shell-channel (async/chan)
-            shell (shell/start {:ch shell-channel
+      (let [schema {:db/ident {:db/unique      :db.unique/identity}
+                    :jupyter/msg-id {:db/unique      :db.unique/identity}
+                    :jupyter/response  {:db/cardinality :db.cardinality/many
+                                        :db/valueType   :db.type/ref}
+                    :notebook/cells    {:db/cardinality :db.cardinality/many
+                                        :db/valueType   :db.type/ref}
+                    :notebook.cell.player/execute-request {:db/valueType   :db.type/ref}}
+            datoms [(d/datom 1 :db/ident :notebook)]
+            conn (d/conn-from-db (d/init-db datoms schema))
+            shell-channel (async/chan)
+            shell (shell/start {:conn conn
+                                :ch shell-channel
                                 :stdin-port stdin-port
                                 :iopub-port iopub-port
                                 :hb-port hb-port
@@ -30,7 +41,7 @@
         (Thread/sleep 1000)
         (log/info "end sleep")
         (doseq [cell (get notebook "cells")]
-          (cell/execute shell-channel cell)))
+          (cell/execute conn shell-channel cell)))
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
       (finally (util/recursive-delete-dir tmp-dir))))
