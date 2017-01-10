@@ -76,7 +76,9 @@
                                     hb-socket-connected
                                     control-socket-connected
                                     shell-socket-connected])
-              (log/info "all sockets connected"))]
+              (log/info "all sockets connected"))
+          _ (when iopub-socket-connected
+              (.setSocketOpt iopub-socket ZMQ/ZMQ_SUBSCRIBE (.getBytes "")))]
       (assoc this
              :signer signer
              :ctx ctx
@@ -136,6 +138,31 @@
         (if (receive-more? socket)
           (recur msg)
           (blobs->map msg))))))
+
+;; my attempt
+(defn receive-from-socket
+  [socket ch-req ch-close]
+  (async/go-loop [blob (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
+                  msg []
+                  shutdown? (async/poll! ch-close)]
+                 (when (not (nil? blob))
+                   (log/info "blob: " blob)
+                   (log/info "msg: " msg)
+                   (log/info "shutdown?: " shutdown?))
+
+                 (if (nil? blob)
+                   (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
+                          []
+                          (async/poll! ch-close))
+                   (if (receive-more? socket)
+                     (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
+                            (conj msg blob)
+                            (async/poll! ch-close))
+                     (do
+                       (async/>!! ch-req (blobs->map (conj msg blob)))
+                          (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
+                          []
+                          (async/poll! ch-close)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Handler
@@ -210,24 +237,34 @@
                                        (dissoc socket-system :config :ctx)
                                        shutdown-signal)
               iopub-socket (:iopub-socket socket-system)
+              hb-socket (:hb-socket socket-system)
               shell-socket (:shell-socket socket-system)
-              ;;_ (log/info "iopub-socket: " iopub-socket)
+              _ (log/info "iopub-socket: " iopub-socket)
               ;;_ (log/info "shell-socket: " shell-socket)
               ;;_ (log/info "shell-socket check tag: " (.checkTag ^SocketBase shell-socket))
               ;;_ (log/info "iopub-socket check tag: " (.checkTag iopub-socket))
+              ch-close (async/chan)
+              ch-req (async/chan)
               ]
+
+          (async/go-loop [request (async/<! ch-req)]
+                         (handler request)
+                         (recur (async/<! ch-req)))
           (log/debug "Entering loop...")
-          (async/go-loop [shutdown (realized? shutdown-signal)]
-            (if shutdown
-              (log/info "shutdown response listener")
-              (do
-                (log/info "call recv-message")
-                (when-let [msg (recv-message shell-socket)]
-                  (handler msg))
-                (log/info "is blocking?")
-                (when-let [msg (recv-message iopub-socket)]
-                  (handler msg))
-                (recur (realized? shutdown-signal)))))
+          (receive-from-socket iopub-socket ch-req ch-close)
+          (receive-from-socket shell-socket ch-req ch-close)
+          (receive-from-socket hb-socket ch-req ch-close)
+          ;;(async/go-loop [shutdown (realized? shutdown-signal)]
+          ;;  (if shutdown
+          ;;    (log/info "shutdown response listener")
+          ;;    (do
+          ;;      (log/info "call recv-message")
+          ;;      (when-let [msg (recv-message shell-socket)]
+          ;;        (handler msg))
+          ;;      (log/info "is blocking?")
+          ;;      (when-let [msg (recv-message iopub-socket)]
+          ;;        (handler msg))
+          ;;      (recur (realized? shutdown-signal)))))
           (async/go-loop [request (async/<! (:ch config))]
             (if (command (assoc request :signer (:signer socket-system)
                                         :session (:session config)
