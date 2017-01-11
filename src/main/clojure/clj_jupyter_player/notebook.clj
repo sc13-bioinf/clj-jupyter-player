@@ -1,10 +1,10 @@
-(ns clj-jupyter-player.cell
+(ns clj-jupyter-player.notebook
   (:require [clojure.core.async :as async]
             [taoensso.timbre :as log]
             [datascript.core :as d]
             [clj-jupyter-player.util :as util]))
 
-(defn execute
+(defn execute-cell
   [conn shell-channel cell]
   (let [cell-type (get cell "cell_type")
         source (get cell "source")

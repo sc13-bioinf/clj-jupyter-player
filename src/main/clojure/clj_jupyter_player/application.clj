@@ -8,7 +8,7 @@
             [clj-jupyter-player.shell :as shell]
             [clj-jupyter-player.kernel :as kernel]
             [clj-jupyter-player.util :as util]
-            [clj-jupyter-player.cell :as cell])
+            [clj-jupyter-player.notebook :as notebook])
   (:import java.util.UUID))
 
 (defn responses-complete?
@@ -95,7 +95,7 @@
                                      (d/unlisten! conn :notebook-done)
                                      (d/listen! conn :kernel-shutdown (partial kernel-shutdown? conn notebook-channel))
                                      (with-open [w (io/writer notebook-output-file)]
-                                       (json/write (cell/render conn notebook) w))
+                                       (json/write (notebook/render conn notebook) w))
                                      (async/>! shell-channel {:command :shutdown}))
             (= msg :kernel-shutdown) (async/>! shell-channel {:command :stop})
             :else (log/error "Say what? Don't understand notebook-channel msg: " msg))
@@ -104,7 +104,7 @@
         (Thread/sleep 1000)
         (log/info "end sleep")
         (doseq [cell (get notebook "cells")]
-          (cell/execute conn shell-channel cell)))
+          (notebook/execute-cell conn shell-channel cell)))
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
       (finally (util/recursive-delete-dir tmp-dir))))
