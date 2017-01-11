@@ -19,3 +19,8 @@
         (async/>!! shell-channel {:command :send
                                   :cell-eid cell-eid
                                   :source source})))))
+
+(defn render
+  "Render the notebook into a datastructre ready for serialisation"
+  [conn notebook]
+  {})

@@ -191,7 +191,14 @@
                 ;;(log/info "stream: " msg)
                 (when (= (:session config) session)
                   (d/transact! (:conn config) [[:db/add -1 :jupyter.response/stream content]
-                                               [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))}))
+                                               [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))
+     "shutdown_reply" (fn [{{:keys [session msg-id]} :parent-header
+                            content                  :content
+                            :as msg}]
+                        ;;(log/info "shutdown_reply: " msg)
+                        (when (= (:session config) session)
+                          (d/transact! (:conn config) [[:db/add -1 :jupyter.response/status "ok"]
+                                                       [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))}))
 
 (defn handler-fn [config socket-map shutdown-signal]
   (let [msg-type->response (response-map config socket-map shutdown-signal)]
@@ -230,6 +237,16 @@
      :metadata metadata
      :content content}))
 
+(defn create-shutdown-request-msg
+  [session restart?]
+  (let [header (create-header session "shutdown_request")
+        parent-header {}
+        metadata {}
+        content {"restart" restart?}]
+    {:header header
+     :parent-header parent-header
+     :metadata metadata
+     :content content}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Dispatch
@@ -245,8 +262,15 @@
                        [:db/add cell-eid :notebook.cell.player/execute-request -1]])
     (send-message shell-socket msg signer)
     true))
+(defmethod command :shutdown [{:keys [control-socket signer session conn]}]
+  (let [msg (create-shutdown-request-msg session true)]
+    (d/transact! conn [[:db/add -1 :jupyter/msg-id (get-in msg [:header "msg_id"])]
+                       [:db/add -1 :jupyter.player/sent (Date.)]
+                       [:db/add -1 :notebook.player/shutdown-request true]])
+    (send-message control-socket msg signer)
+    true))
 (defmethod command :stop [_] false)
-(defmethod command :default [_] (log/error "Failed to understand your command") true)
+(defmethod command :default [_] (log/error "Shell failed to understand your command") true)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Worker
 
@@ -261,6 +285,7 @@
                                        shutdown-signal)
               iopub-socket (:iopub-socket socket-system)
               hb-socket (:hb-socket socket-system)
+              control-socket (:control-socket socket-system)
               shell-socket (:shell-socket socket-system)
               _ (log/info "iopub-socket: " iopub-socket)
               ;;_ (log/info "shell-socket: " shell-socket)
@@ -293,6 +318,7 @@
             (if (command (assoc request :signer (:signer socket-system)
                                         :session (:session config)
                                         :shell-socket shell-socket
+                                        :control-socket control-socket
                                         :conn (:conn config)))
               (recur (async/<! (:ch config)))
               (log/info "shutdown request listener"))))

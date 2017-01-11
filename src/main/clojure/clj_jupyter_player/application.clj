@@ -46,6 +46,21 @@
       (log/info "send notebook-done")
       (async/>!! notebook-channel :notebook-done))))
 
+(defn kernel-shutdown?
+  "Send a message on the channel when the kernel has shutdown"
+  [conn notebook-channel tx-report]
+  (let [kernel-shutdown (first (filter :notebook.player/shutdown-request
+                                       (d/q '[:find [(pull ?e [:db/id :notebook.player/shutdown-request {:jupyter/response [*]}])]
+                                                               :where [?e :notebook.player/shutdown-request true]]
+                                            @conn)))
+        _ (log/info "kernel-shutdown: " kernel-shutdown)]
+    (if-let [responses (:jupyter/response kernel-shutdown)]
+      (if (responses-complete? conn (:db/id kernel-shutdown) responses)
+        (do
+          (log/info "kernel-shutdown? is complete: " responses)
+          (async/>!! notebook-channel :kernel-shutdown))
+        (log/info "kernel-shutdown? incomplete: " responses)))))
+
 (defn run-notebook
   [tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file]
   (try
@@ -75,10 +90,15 @@
             notebook (with-open [r (io/reader notebook-file)]
                        (json/read r))]
         (async/go-loop [msg (async/<! notebook-channel)]
-          (if (= msg :notebook-done)
-            (with-open [w (io/writer notebook-output-file)]
-              (json/write {} w))
-            (log/error "Say what? Don't understand notebook-channel msg: " msg))
+          (cond
+            (= msg :notebook-done) (do
+                                     (d/unlisten! conn :notebook-done)
+                                     (d/listen! conn :kernel-shutdown (partial kernel-shutdown? conn notebook-channel))
+                                     (with-open [w (io/writer notebook-output-file)]
+                                       (json/write (cell/render conn notebook) w))
+                                     (async/>! shell-channel {:command :shutdown}))
+            (= msg :kernel-shutdown) (async/>! shell-channel {:command :stop})
+            :else (log/error "Say what? Don't understand notebook-channel msg: " msg))
           (recur (async/<! notebook-channel)))
         (log/info "start sleep")
         (Thread/sleep 1000)
