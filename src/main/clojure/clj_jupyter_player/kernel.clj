@@ -15,7 +15,8 @@
            :keys [connection-file tmp-dir]} :config
           :as this}]
     (let [argv-with-connection (update-with-connection-file argv connection-file)
-           kernel-process (process/run tmp-dir argv-with-connection)
+          _ (log/info "trying to run kernel with tmp-dir: " tmp-dir)
+          kernel-process (process/run tmp-dir argv-with-connection)
           _ (log/info "kernel-process: " kernel-process)]
       (assoc this :process kernel-process)))
   (close [{:keys [process]}]
@@ -25,15 +26,11 @@
   (util/init (->KernelSystem config)))
 
 (defn start
-  [config shutdown-signal]
-  (future
-    (try
-      (log/info "Starting kernel ...")
-      (with-open [^KernelSystem kernel-system (create-kernel config)]
-        (with-open [k-rdr (clojure.java.io/reader (.getInputStream (:process kernel-system)))]
-          (while (not (realized? shutdown-signal))
-            (doseq [line  (line-seq k-rdr)]
-              (log/info "kernel-line: " line)))))
-      (catch Exception e (log/debug e)))))
+  [config]
+  (log/info "Starting kernel ...")
+  (with-open [^KernelSystem kernel-system (create-kernel config)]
+    (with-open [k-rdr (clojure.java.io/reader (.getInputStream (:process kernel-system)))]
+      (doseq [line  (line-seq k-rdr)]
+        (log/info "kernel-line: " line)))))
 
 
