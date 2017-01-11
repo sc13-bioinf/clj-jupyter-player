@@ -76,17 +76,17 @@
             notebook-channel (async/chan)
             _ (d/listen! conn :notebook-done (partial notebook-completed? conn notebook-channel))
             shell-channel (async/chan)
-            shell (shell/start {:conn conn
-                                :ch shell-channel
-                                :stdin-port stdin-port
-                                :iopub-port iopub-port
-                                :hb-port hb-port
-                                :control-port control-port
-                                :shell-port shell-port
-                                :transport transport
-                                :ip ip
-                                :secret-key secret-key
-                                :session (str (UUID/randomUUID))})
+            shell (future (shell/start {:conn conn
+                                        :ch shell-channel
+                                        :stdin-port stdin-port
+                                        :iopub-port iopub-port
+                                        :hb-port hb-port
+                                        :control-port control-port
+                                        :shell-port shell-port
+                                        :transport transport
+                                        :ip ip
+                                        :secret-key secret-key
+                                        :session (str (UUID/randomUUID))}))
             notebook (with-open [r (io/reader notebook-file)]
                        (json/read r))]
         (async/go-loop [msg (async/<! notebook-channel)]
@@ -109,7 +109,8 @@
         (Thread/sleep 1000)
         (log/info "end sleep")
         (doseq [cell (get notebook "cells")]
-          (notebook/execute-cell conn shell-channel cell)))
+          (notebook/execute-cell conn shell-channel cell))
+        @shell)
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
       (finally (util/recursive-delete-dir tmp-dir))))

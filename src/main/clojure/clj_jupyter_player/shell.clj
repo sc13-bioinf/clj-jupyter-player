@@ -278,47 +278,41 @@
 ;;; Worker
 
 (defn start [config]
-  (log/info "config: " config)
-  (future
-    (log/info "Starting shell...")
-    (try
-      (with-open [^SocketSystem socket-system (create-sockets config)]
-        (let [handler (handler-fn config (dissoc socket-system :config :ctx))
-              iopub-socket (:iopub-socket socket-system)
-              hb-socket (:hb-socket socket-system)
-              control-socket (:control-socket socket-system)
-              shell-socket (:shell-socket socket-system)
-              _ (log/info "iopub-socket: " iopub-socket)
-              ;;_ (log/info "shell-socket: " shell-socket)
-              ;;_ (log/info "shell-socket check tag: " (.checkTag ^SocketBase shell-socket))
-              ;;_ (log/info "iopub-socket check tag: " (.checkTag iopub-socket))
-              ch-close (async/chan)
-              mult-close (async/mult ch-close)
-              ch-req-iopub (async/chan)
-              ch-req-shell (async/chan)
-              ch-req-hb (async/chan)
-              ch-req (async/merge [ch-req-iopub ch-req-shell ch-req-hb] 3)]
-          (async/go-loop [request (async/<! ch-req)]
-            (if (nil? request)
-              (log/info "shutdown request listener")
-              (do
-                (handler request)
-                (recur (async/<! ch-req)))))
-          (log/debug "Entering loop...")
-          (receive-from-socket iopub-socket ch-req-iopub (async/tap mult-close (async/chan 1)))
-          (receive-from-socket shell-socket ch-req-shell (async/tap mult-close (async/chan 1)))
-          (receive-from-socket hb-socket ch-req-hb (async/tap mult-close (async/chan 1)))
-          (loop [shell-request (async/<!! (:ch config))]
-            ;;(log/info "current notebook: " (d/pull @(:conn config) '[* {:notebook/cells [*]}] [:db/ident :notebook]))
-            (if (command (assoc shell-request :signer (:signer socket-system)
-                                              :session (:session config)
-                                              :shell-socket shell-socket
-                                              :control-socket control-socket
-                                              :conn (:conn config)))
-              (recur (async/<!! (:ch config)))
-              (do
-                (log/info "shutdown shell-request listener")
-                (async/>!! ch-close :stop)
-                (Thread/sleep 1000))))
-          (log/info "Exiting loop")))
-      (catch Exception e (log/debug (util/stack-trace-to-string e))))))
+  (log/info "Starting shell...")
+  (with-open [^SocketSystem socket-system (create-sockets config)]
+    (let [handler (handler-fn config (dissoc socket-system :config :ctx))
+          iopub-socket (:iopub-socket socket-system)
+          hb-socket (:hb-socket socket-system)
+          control-socket (:control-socket socket-system)
+          shell-socket (:shell-socket socket-system)
+          ;;_ (log/info "shell-socket: " shell-socket)
+          ;;_ (log/info "shell-socket check tag: " (.checkTag ^SocketBase shell-socket))
+          ;;_ (log/info "iopub-socket check tag: " (.checkTag iopub-socket))
+          ch-close (async/chan)
+          mult-close (async/mult ch-close)
+          ch-req-iopub (async/chan)
+          ch-req-shell (async/chan)
+          ch-req-hb (async/chan)
+          ch-req (async/merge [ch-req-iopub ch-req-shell ch-req-hb] 3)]
+      (async/go-loop [request (async/<! ch-req)]
+        (if (nil? request)
+          (log/info "shutdown request listener")
+          (do
+            (handler request)
+            (recur (async/<! ch-req)))))
+      (receive-from-socket iopub-socket ch-req-iopub (async/tap mult-close (async/chan 1)))
+      (receive-from-socket shell-socket ch-req-shell (async/tap mult-close (async/chan 1)))
+      (receive-from-socket hb-socket ch-req-hb (async/tap mult-close (async/chan 1)))
+      (log/debug "Entering loop...")
+      (loop [shell-request (async/<!! (:ch config))]
+        (if (command (assoc shell-request :signer (:signer socket-system)
+                                          :session (:session config)
+                                          :shell-socket shell-socket
+                                          :control-socket control-socket
+                                          :conn (:conn config)))
+          (recur (async/<!! (:ch config)))
+          (do
+            (log/info "shutdown shell-request listener")
+            (async/>!! ch-close :stop)
+            (Thread/sleep 1000))))
+      (log/info "Exiting loop"))))
