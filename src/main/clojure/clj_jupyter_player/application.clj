@@ -11,8 +11,43 @@
             [clj-jupyter-player.cell :as cell])
   (:import java.util.UUID))
 
+(defn responses-complete?
+  [conn request-eid responses]
+  (let [response-order (into {}
+                             (map-indexed #(vector %2 %1)
+                                          (->> (d/datoms @conn :aevt :jupyter/response request-eid)
+                                               (sort-by :tx)
+                                               (map :v))))
+        sorted-responses (sort-by #(get response-order (:db/id %)) responses)
+        last-execution-state (last (remove nil? (map :jupyter.response/execution-state sorted-responses)))
+        response-status (remove nil? (map :jupyter.response/status sorted-responses))]
+    (and (= last-execution-state "idle")
+         (every? #(= "ok" %) response-status))))
+
+(defn cell-completed?
+  "Do we have all of the output from this cell?"
+  [conn cell]
+  (if (or (not= (:notebook.cell/type cell) "code")
+          (and (= (:notebook.cell/type cell) "code")
+               (:notebook.cell/empty? cell)))
+    true
+    (if-let [request-eid (-> cell :notebook.cell.player/execute-request :db/id)]
+      (if-let[responses (:jupyter/response (d/pull @conn '[{:jupyter/response [*]}] request-eid))]
+          (responses-complete? conn request-eid responses)
+          false)
+      false)))
+
+(defn notebook-completed?
+  "Send a message on the channel when all cells are finished"
+  [conn notebook-channel tx-report]
+  (let [cells (:notebook/cells (d/pull @conn '[{:notebook/cells [:notebook.cell/type :notebook.cell/empty? :notebook.cell.player/execute-request]}] [:db/ident :notebook]))
+        _ (log/info "notebook-completed? cells: " (vec (map (partial cell-completed? conn) cells)))]
+    (when (every? (partial cell-completed? conn) cells)
+      (log/info "send notebook-done")
+      (async/>!! notebook-channel :notebook-done))))
+
 (defn run-notebook
-  [tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file]
+  [tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file]
   (try
       (let [schema {:db/ident {:db/unique      :db.unique/identity}
                     :jupyter/msg-id {:db/unique      :db.unique/identity}
@@ -23,6 +58,8 @@
                     :notebook.cell.player/execute-request {:db/valueType   :db.type/ref}}
             datoms [(d/datom 1 :db/ident :notebook)]
             conn (d/conn-from-db (d/init-db datoms schema))
+            notebook-channel (async/chan)
+            _ (d/listen! conn :notebook-done (partial notebook-completed? conn notebook-channel))
             shell-channel (async/chan)
             shell (shell/start {:conn conn
                                 :ch shell-channel
@@ -37,6 +74,12 @@
                                 :session (str (UUID/randomUUID))} shutdown-signal)
             notebook (with-open [r (io/reader notebook-file)]
                        (json/read r))]
+        (async/go-loop [msg (async/<! notebook-channel)]
+          (if (= msg :notebook-done)
+            (with-open [w (io/writer notebook-output-file)]
+              (json/write {} w))
+            (log/error "Say what? Don't understand notebook-channel msg: " msg))
+          (recur (async/<! notebook-channel)))
         (log/info "start sleep")
         (Thread/sleep 1000)
         (log/info "end sleep")
@@ -47,7 +90,7 @@
       (finally (util/recursive-delete-dir tmp-dir))))
 
 (defn app
-  ([tmp-dir kernel-name kernel-config-file notebook-file]
+  ([tmp-dir kernel-name kernel-config-file notebook-file notebook-output-file]
   (let [shutdown-signal (promise)
         transport "tcp"
         ip "127.0.0.1"
@@ -77,8 +120,8 @@
         kernel (kernel/start {:kernel-config kernel-config
                               :connection-file connection-file
                               :tmp-dir tmp-dir} shutdown-signal)]
-    (run-notebook tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file)))
-  ([tmp-dir kernel-name kernel-config-file notebook-file debug-connection-file]
+    (run-notebook tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file)))
+  ([tmp-dir kernel-name kernel-config-file notebook-file notebook-output-file debug-connection-file]
   (let [shutdown-signal (promise)
         connection-config (with-open [r (io/reader debug-connection-file)]
                             (json/read r))
@@ -90,4 +133,4 @@
         hb-port      (get connection-config "hb_port")
         control-port (get connection-config "control_port")
         shell-port   (get connection-config "shell_port")]
-    (run-notebook tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file))))
+    (run-notebook tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file))))

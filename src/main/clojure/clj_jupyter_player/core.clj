@@ -27,6 +27,9 @@
     :id :notebook-path
     :parse-fn #(io/as-file %)
     :validate [#(.exists %) "File not found"]]
+   ["-o" "--notebook-output-path NOTEBOOK_OUTPUT_PATH" "The output notebook file"
+    :id :notebook-output-path
+    :parse-fn #(io/as-file %)]
    ["-d" "--debug-connection-path DEBUG_CONNECTION_PATH" "Use an existing connection file to conenct to an already running kernel"
     :id :debug-connection-path
     :parse-fn #(io/as-file %)
@@ -43,17 +46,21 @@
       (:help options) (usage "" (:summary opts))
       (nil? (:kernel-config-path options)) (usage "Please supply kernel config path" (:summary opts))
       (nil? (:notebook-path options)) (usage "Please supply notebook path" (:summary opts))
+      (nil? (:notebook-output-path options)) (usage "Please supply notebook output path" (:summary opts))
       (and (contains? options :kernel-config-path)
-           (contains? options :notebook-path)) (if (contains? options :debug-connection-path)
-                                                 (application/app tmp-dir
-                                                                  kernel-name
-                                                                  (:kernel-config-path options)
-                                                                  (:notebook-path options)
-                                                                  (:debug-connection-path options))
-                                                 (application/app tmp-dir
-                                                                  kernel-name
-                                                                  (:kernel-config-path options)
-                                                                  (:notebook-path options)))
+           (contains? options :notebook-path)
+           (contains? options :notebook-output-path)) (if (contains? options :debug-connection-path)
+                                                        (application/app tmp-dir
+                                                                         kernel-name
+                                                                         (:kernel-config-path options)
+                                                                         (:notebook-path options)
+                                                                         (:notebook-output-path options)
+                                                                         (:debug-connection-path options))
+                                                        (application/app tmp-dir
+                                                                         kernel-name
+                                                                         (:kernel-config-path options)
+                                                                         (:notebook-path options)
+                                                                         (:notebook-output-path options)))
       :else (usage "" (:summary opts)))))
 
 ;;(defn -main [config-path notebook-path]

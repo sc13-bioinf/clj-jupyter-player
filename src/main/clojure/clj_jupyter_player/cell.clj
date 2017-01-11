@@ -7,11 +7,11 @@
 (defn execute
   [conn shell-channel cell]
   (let [cell-type (get cell "cell_type")
+        source (get cell "source")
         tx-result (d/transact! conn [[:db/add -1 :notebook.cell/type cell-type]
+                                     [:db/add -1 :notebook.cell/empty? (empty? source)]
                                      [:db/add [:db/ident :notebook] :notebook/cells -1]])
-        cell-eid (get (:tempids tx-result) -1)
-        ;;_ (log/info "nb: " (d/pull @conn '[* {:notebook/cells [*]}] [:db/ident :notebook]))
-        source (get cell "source")]
+        cell-eid (get (:tempids tx-result) -1)]
     (if (and (= cell-type "code")
              (not (empty? source)))
       (do
