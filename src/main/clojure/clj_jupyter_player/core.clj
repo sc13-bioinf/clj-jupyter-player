@@ -62,6 +62,3 @@
                                                                          (:notebook-path options)
                                                                          (:notebook-output-path options)))
       :else (usage "" (:summary opts)))))
-
-;;(defn -main [config-path notebook-path]
-;;  (log/info (str/join "" ["Playing notebook '" notebook-path "' with kernel config '" config-path "'"])))

@@ -96,10 +96,15 @@
                                      (d/listen! conn :kernel-shutdown (partial kernel-shutdown? conn notebook-channel))
                                      (with-open [w (io/writer notebook-output-file)]
                                        (json/write (notebook/render conn notebook) w))
-                                     (async/>! shell-channel {:command :shutdown}))
-            (= msg :kernel-shutdown) (async/>! shell-channel {:command :stop})
-            :else (log/error "Say what? Don't understand notebook-channel msg: " msg))
-          (recur (async/<! notebook-channel)))
+                                     (async/>! shell-channel {:command :shutdown})
+                                     (recur (async/<! notebook-channel)))
+            (= msg :kernel-shutdown) (do
+                                       (d/unlisten! conn :kernel-shutdown)
+                                       (async/>! shell-channel {:command :stop})
+                                       (log/info "shutdown notebook listener"))
+            :else (do
+                    (log/error "Say what? Don't understand notebook-channel msg: " msg)
+                    (recur (async/<! notebook-channel)))))
         (log/info "start sleep")
         (Thread/sleep 1000)
         (log/info "end sleep")

@@ -305,9 +305,9 @@
                 (handler request)
                 (recur (async/<! ch-req)))))
           (log/debug "Entering loop...")
-          (receive-from-socket iopub-socket ch-req-iopub (async/tap mult-close (async/chan)))
-          (receive-from-socket shell-socket ch-req-shell (async/tap mult-close (async/chan)))
-          (receive-from-socket hb-socket ch-req-hb (async/tap mult-close (async/chan)))
+          (receive-from-socket iopub-socket ch-req-iopub (async/tap mult-close (async/chan 1)))
+          (receive-from-socket shell-socket ch-req-shell (async/tap mult-close (async/chan 1)))
+          (receive-from-socket hb-socket ch-req-hb (async/tap mult-close (async/chan 1)))
           (loop [shell-request (async/<!! (:ch config))]
             ;;(log/info "current notebook: " (d/pull @(:conn config) '[* {:notebook/cells [*]}] [:db/ident :notebook]))
             (if (command (assoc shell-request :signer (:signer socket-system)
@@ -318,6 +318,7 @@
               (recur (async/<!! (:ch config)))
               (do
                 (log/info "shutdown shell-request listener")
-                (async/>!! ch-close :stop))))
+                (async/>!! ch-close :stop)
+                (Thread/sleep 1000))))
           (log/info "Exiting loop")))
       (catch Exception e (log/debug (util/stack-trace-to-string e))))))
