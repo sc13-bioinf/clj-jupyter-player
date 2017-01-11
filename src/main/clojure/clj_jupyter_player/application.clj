@@ -62,7 +62,7 @@
         (log/info "kernel-shutdown? incomplete: " responses)))))
 
 (defn run-notebook
-  [tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file]
+  [tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file]
   (try
       (let [schema {:db/ident {:db/unique      :db.unique/identity}
                     :jupyter/msg-id {:db/unique      :db.unique/identity}
@@ -86,7 +86,7 @@
                                 :transport transport
                                 :ip ip
                                 :secret-key secret-key
-                                :session (str (UUID/randomUUID))} shutdown-signal)
+                                :session (str (UUID/randomUUID))})
             notebook (with-open [r (io/reader notebook-file)]
                        (json/read r))]
         (async/go-loop [msg (async/<! notebook-channel)]
@@ -140,10 +140,9 @@
         kernel (kernel/start {:kernel-config kernel-config
                               :connection-file connection-file
                               :tmp-dir tmp-dir} shutdown-signal)]
-    (run-notebook tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file)))
+    (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file)))
   ([tmp-dir kernel-name kernel-config-file notebook-file notebook-output-file debug-connection-file]
-  (let [shutdown-signal (promise)
-        connection-config (with-open [r (io/reader debug-connection-file)]
+  (let [connection-config (with-open [r (io/reader debug-connection-file)]
                             (json/read r))
         transport    (get connection-config "transport")
         ip           (get connection-config "ip")
@@ -153,4 +152,4 @@
         hb-port      (get connection-config "hb_port")
         control-port (get connection-config "control_port")
         shell-port   (get connection-config "shell_port")]
-    (run-notebook tmp-dir shutdown-signal stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file))))
+    (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file))))

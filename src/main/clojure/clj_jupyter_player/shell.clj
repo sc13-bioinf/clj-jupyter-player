@@ -146,29 +146,32 @@
   (async/go-loop [blob (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
                   msg []
                   shutdown? (async/poll! ch-close)]
-                 ;;(when (not (nil? blob))
-                 ;;  (log/info "blob: " blob)
-                 ;;  (log/info "msg: " msg)
-                 ;;  (log/info "shutdown?: " shutdown?))
-
-                 (if (nil? blob)
-                   (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
-                          []
-                          (async/poll! ch-close))
-                   (if (receive-more? socket)
-                     (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
-                            (conj msg blob)
-                            (async/poll! ch-close))
-                     (do
-                       (async/>!! ch-req (blobs->map (conj msg blob)))
-                          (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
-                          []
-                          (async/poll! ch-close)))))))
+    ;;(when (not (nil? blob))
+    ;;  (log/info "blob: " blob)
+    ;;  (log/info "msg: " msg)
+    ;;  (log/info "shutdown?: " shutdown?))
+    (if shutdown?
+      (do
+        (log/info "shutdown receive from socket")
+        (async/close! ch-req))
+      (if (nil? blob)
+        (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
+               []
+               (async/poll! ch-close))
+        (if (receive-more? socket)
+          (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
+                 (conj msg blob)
+                 (async/poll! ch-close))
+          (do
+            (async/>!! ch-req (blobs->map (conj msg blob)))
+            (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
+                   []
+                   (async/poll! ch-close))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Handler
 
-(defn response-map [config {:keys [shell-socket iopub-socket]} shutdown-signal]
+(defn response-map [config {:keys [shell-socket iopub-socket]}]
   ;;(log/info "response map config: " config)
   (let [signer          (signer-fn (:secret-key config))]
     {"status" (fn [{{:keys [session msg-id]} :parent-header
@@ -200,8 +203,8 @@
                           (d/transact! (:conn config) [[:db/add -1 :jupyter.response/status "ok"]
                                                        [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))}))
 
-(defn handler-fn [config socket-map shutdown-signal]
-  (let [msg-type->response (response-map config socket-map shutdown-signal)]
+(defn handler-fn [config socket-map]
+  (let [msg-type->response (response-map config socket-map)]
     (fn [{{:keys [msg-type]} :header :as msg}]
       ;;(log/info "Handling" msg)
       (if-let [handler (msg-type->response msg-type)]
@@ -274,15 +277,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Worker
 
-(defn start [config shutdown-signal]
+(defn start [config]
   (log/info "config: " config)
   (future
     (log/info "Starting shell...")
     (try
       (with-open [^SocketSystem socket-system (create-sockets config)]
-        (let [handler      (handler-fn config
-                                       (dissoc socket-system :config :ctx)
-                                       shutdown-signal)
+        (let [handler (handler-fn config (dissoc socket-system :config :ctx))
               iopub-socket (:iopub-socket socket-system)
               hb-socket (:hb-socket socket-system)
               control-socket (:control-socket socket-system)
@@ -292,39 +293,31 @@
               ;;_ (log/info "shell-socket check tag: " (.checkTag ^SocketBase shell-socket))
               ;;_ (log/info "iopub-socket check tag: " (.checkTag iopub-socket))
               ch-close (async/chan)
-              ch-req (async/chan)
-              ]
-
+              mult-close (async/mult ch-close)
+              ch-req-iopub (async/chan)
+              ch-req-shell (async/chan)
+              ch-req-hb (async/chan)
+              ch-req (async/merge [ch-req-iopub ch-req-shell ch-req-hb] 3)]
           (async/go-loop [request (async/<! ch-req)]
-                         (handler request)
-                         (recur (async/<! ch-req)))
+            (if (nil? request)
+              (log/info "shutdown request listener")
+              (do
+                (handler request)
+                (recur (async/<! ch-req)))))
           (log/debug "Entering loop...")
-          (receive-from-socket iopub-socket ch-req ch-close)
-          (receive-from-socket shell-socket ch-req ch-close)
-          (receive-from-socket hb-socket ch-req ch-close)
-          ;;(async/go-loop [shutdown (realized? shutdown-signal)]
-          ;;  (if shutdown
-          ;;    (log/info "shutdown response listener")
-          ;;    (do
-          ;;      (log/info "call recv-message")
-          ;;      (when-let [msg (recv-message shell-socket)]
-          ;;        (handler msg))
-          ;;      (log/info "is blocking?")
-          ;;      (when-let [msg (recv-message iopub-socket)]
-          ;;        (handler msg))
-          ;;      (recur (realized? shutdown-signal)))))
-          (async/go-loop [request (async/<! (:ch config))]
+          (receive-from-socket iopub-socket ch-req-iopub (async/tap mult-close (async/chan)))
+          (receive-from-socket shell-socket ch-req-shell (async/tap mult-close (async/chan)))
+          (receive-from-socket hb-socket ch-req-hb (async/tap mult-close (async/chan)))
+          (loop [shell-request (async/<!! (:ch config))]
             ;;(log/info "current notebook: " (d/pull @(:conn config) '[* {:notebook/cells [*]}] [:db/ident :notebook]))
-            (if (command (assoc request :signer (:signer socket-system)
-                                        :session (:session config)
-                                        :shell-socket shell-socket
-                                        :control-socket control-socket
-                                        :conn (:conn config)))
-              (recur (async/<! (:ch config)))
-              (log/info "shutdown request listener"))))
-        ;; hang until we get shutdown signal
-        (while (not (realized? shutdown-signal)))
-        )
-      (catch Exception e (log/debug (util/stack-trace-to-string e)))
-      (finally
-        (deliver shutdown-signal true)))))
+            (if (command (assoc shell-request :signer (:signer socket-system)
+                                              :session (:session config)
+                                              :shell-socket shell-socket
+                                              :control-socket control-socket
+                                              :conn (:conn config)))
+              (recur (async/<!! (:ch config)))
+              (do
+                (log/info "shutdown shell-request listener")
+                (async/>!! ch-close :stop))))
+          (log/info "Exiting loop")))
+      (catch Exception e (log/debug (util/stack-trace-to-string e))))))
