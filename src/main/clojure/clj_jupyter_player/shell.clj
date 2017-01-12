@@ -257,7 +257,7 @@
 (defmulti command :command)
 (defmethod command :send [{:keys [shell-socket signer session source conn cell-eid]}]
   (let [;;_ (log/info "sending: " source)
-        msg (create-execute-request-msg session (first source))
+        msg (create-execute-request-msg session (clojure.string/join "" source))
         ;;_ (log/info "msg: " msg)
         ]
     (d/transact! conn [[:db/add -1 :jupyter/msg-id (get-in msg [:header "msg_id"])]
