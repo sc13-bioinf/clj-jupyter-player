@@ -40,8 +40,8 @@
 (defn notebook-completed?
   "Send a message on the channel when all cells are finished"
   [conn notebook-channel tx-report]
-  (let [cells (:notebook/cells (d/pull @conn '[{:notebook/cells [:notebook.cell/type :notebook.cell/empty? :notebook.cell.player/execute-request]}] [:db/ident :notebook]))
-        _ (log/info "notebook-completed? cells: " (vec (map (partial cell-completed? conn) cells)))]
+  (when-let [cells (:notebook/cells (d/pull @conn '[{:notebook/cells [:notebook.cell/type :notebook.cell/empty? :notebook.cell.player/execute-request]}] [:db/ident :notebook]))]
+    (log/info "notebook-completed? cells: " (vec (map (partial cell-completed? conn) cells)))
     (when (every? (partial cell-completed? conn) cells)
       (log/info "send notebook-done")
       (async/>!! notebook-channel :notebook-done))))
@@ -107,6 +107,7 @@
     (log/info "start sleep")
     (Thread/sleep 1000)
     (log/info "end sleep")
+    (notebook/execute-notebook conn notebook)
     (doseq [cell (get notebook "cells")]
       (notebook/execute-cell conn shell-channel cell))
     shell))

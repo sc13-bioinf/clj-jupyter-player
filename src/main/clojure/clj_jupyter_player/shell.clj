@@ -187,6 +187,7 @@
                        ;;(log/info "execute_reply: " msg)
                        (when (= (:session config) session)
                          (d/transact! (:conn config) [[:db/add -1 :jupyter.response/status status]
+                                                      [:db/add -1 :jupyter.response/execution-count execution-count]
                                                       [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))
      "stream" (fn [{{:keys [session msg-id]} :parent-header
                     content                  :content
