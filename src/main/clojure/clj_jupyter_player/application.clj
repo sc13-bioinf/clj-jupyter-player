@@ -21,8 +21,10 @@
         sorted-responses (sort-by #(get response-order (:db/id %)) responses)
         last-execution-state (last (remove nil? (map :jupyter.response/execution-state sorted-responses)))
         response-status (remove nil? (map :jupyter.response/status sorted-responses))]
-    (and (= last-execution-state "idle")
-         (every? #(= "ok" %) response-status))))
+    (or (and (nil? last-execution-state)
+             (some #(= "aborted" %) response-status))
+        (and (= last-execution-state "idle")
+             (every? #(contains? #{"ok" "error"} %) response-status)))))
 
 (defn cell-completed?
   "Do we have all of the output from this cell?"
