@@ -89,8 +89,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Datascript
 
-(defn update-db
-  [conn e k v]
-  (if (nil? (d/entity (d/db conn) e))
-    (throw (Exception. "update-app-state failed, entity not found for " e))
-    (d/transact! conn [[:db/add e k v]])))
+(defn tx-data-from-map
+  "Create tx add statements from map eliding nil values"
+  [eid attr-val-map]
+  (for [[a v] (remove (comp nil? second) attr-val-map)]
+    [:db/add eid a v]))

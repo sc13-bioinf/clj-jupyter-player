@@ -130,17 +130,6 @@
                 (map util/json->edn data))
         (assoc :signature sign :identities ids))))
 
-(defn recv-message [^SocketBase socket]
-  (log/info "recv-message socket: " socket " checkTag: " (.checkTag socket))
-  (loop [msg []]
-    (log/info "recv-message-loop: " msg)
-    (when-let [blob (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))]
-      (let [msg (conj msg blob)]
-        (if (receive-more? socket)
-          (recur msg)
-          (blobs->map msg))))))
-
-;; my attempt
 (defn receive-from-socket
   [socket ch-req ch-close]
   (async/go-loop [blob (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
@@ -175,10 +164,19 @@
   ;;(log/info "response map config: " config)
   (let [signer          (signer-fn (:secret-key config))]
     {"status" (fn [{{:keys [session msg-id]} :parent-header
-                    {:keys [execution-state]}  :content}]
+                    {:keys [execution-state]} :content}]
                 (when (= (:session config) session)
                   (d/transact! (:conn config) [[:db/add -1 :jupyter.response/execution-state execution-state]
                                                [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))
+     "error" (fn [{{:keys [session msg-id]} :parent-header
+                   {:keys [status ename evalue traceback]} :content}]
+               (when (= (:session config) session)
+                 (d/transact! (:conn config)
+                              (conj (vec (util/tx-data-from-map -1 {:jupyter.response/ename ename
+                                                                    :jupyter.response/evalue evalue
+                                                                    :jupyter.response/traceback traceback
+                                                                    :jupyter.response/status status}))
+                                    [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]))))
      "execute_input" (fn [{{:keys [session msg-id]} :parent-header
                            {:keys [execution-count code]}  :content}])
      "execute_reply" (fn [{{:keys [session msg-id]}         :parent-header
@@ -186,9 +184,10 @@
                            :as msg}]
                        ;;(log/info "execute_reply: " msg)
                        (when (= (:session config) session)
-                         (d/transact! (:conn config) [[:db/add -1 :jupyter.response/status status]
-                                                      [:db/add -1 :jupyter.response/execution-count execution-count]
-                                                      [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))
+                         (d/transact! (:conn config)
+                                      (conj (vec (util/tx-data-from-map -1 {:jupyter.response/execution-count execution-count
+                                                                            :jupyter.response/status status}))
+                                            [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]))))
      "stream" (fn [{{:keys [session msg-id]} :parent-header
                     content                  :content
                     :as msg}]
