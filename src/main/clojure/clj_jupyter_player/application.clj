@@ -40,11 +40,13 @@
 (defn notebook-completed?
   "Send a message on the channel when all cells are finished"
   [conn notebook-channel tx-report]
-  (when-let [cells (:notebook/cells (d/pull @conn '[{:notebook/cells [:notebook.cell/type :notebook.cell/empty? :notebook.cell.player/execute-request]}] [:db/ident :notebook]))]
-    (log/info "notebook-completed? cells: " (vec (map (partial cell-completed? conn) cells)))
-    (when (every? (partial cell-completed? conn) cells)
-      (log/info "send notebook-done")
-      (async/>!! notebook-channel :notebook-done))))
+  (let [notebook (d/pull @conn '[:notebook/loaded {:notebook/cells [:notebook.cell/type :notebook.cell/empty? :notebook.cell.player/execute-request]}] [:db/ident :notebook])]
+    (when (:notebook/loaded notebook)
+      (when-let [cells (:notebook/cells notebook)]
+        (log/info "notebook-completed? cells: " (vec (map (partial cell-completed? conn) cells)))
+        (when (every? (partial cell-completed? conn) cells)
+          (log/info "send notebook-done")
+          (async/>!! notebook-channel :notebook-done))))))
 
 (defn kernel-shutdown?
   "Send a message on the channel when the kernel has shutdown"
@@ -70,7 +72,8 @@
                 :notebook/cells {:db/cardinality :db.cardinality/many
                                  :db/valueType   :db.type/ref}
                 :notebook.cell.player/execute-request {:db/valueType :db.type/ref}}
-        datoms [(d/datom 1 :db/ident :notebook)]
+        datoms [(d/datom 1 :db/ident :notebook)
+                (d/datom 1 :notebook/loaded false)]
         conn (d/conn-from-db (d/init-db datoms schema))
         notebook-channel (async/chan)
         _ (d/listen! conn :notebook-done (partial notebook-completed? conn notebook-channel))
@@ -110,6 +113,7 @@
     (notebook/execute-notebook conn notebook)
     (doseq [cell (get notebook "cells")]
       (notebook/execute-cell conn shell-channel cell))
+    (notebook/execute-loaded conn)
     shell))
 
 (defn app

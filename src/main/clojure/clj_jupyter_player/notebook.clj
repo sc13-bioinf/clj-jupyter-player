@@ -28,6 +28,10 @@
                                   :cell-eid cell-eid
                                   :source source})))))
 
+(defn execute-loaded
+  [conn]
+  (d/transact! conn [[:db/add [:db/ident :notebook] :notebook/loaded true]]))
+
 (defn sort-responses
   [conn request-eid responses]
   (let [response-order (into {}
