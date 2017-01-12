@@ -46,6 +46,9 @@
   (for [response output-responses]
     (cond
       (contains? response :jupyter.response/stream) (assoc (:jupyter.response/stream response) "output_type" "stream")
+      (contains? response :jupyter.response/data) {"output_type" "display_data"
+                                                   "data" (:jupyter.response/data response)
+                                                   "metadata" (:jupyter.response/metadata response)}
       :else (throw (Exception. (str "Could not find known response type in " response))))))
 
 (defn render-cell-default
@@ -62,7 +65,7 @@
             _ (log/info "sorted-responses: " sorted-responses)
             execution-count (:jupyter.response/execution-count (last (filter #(contains? % :jupyter.response/execution-count) sorted-responses)))
             _ (log/info "execution-count: " execution-count)
-            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream} (keys %))) sorted-responses))
+            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream :jupyter.response/data} (keys %))) sorted-responses))
             _ (log/info "output-responses: " output-responses)]
         (assoc (render-cell-default cell) "execution_count" execution-count
                                           "outputs" (render-output-responses output-responses)))

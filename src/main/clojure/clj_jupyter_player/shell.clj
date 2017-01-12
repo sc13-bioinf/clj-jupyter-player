@@ -188,6 +188,14 @@
                                       (conj (vec (util/tx-data-from-map -1 {:jupyter.response/execution-count execution-count
                                                                             :jupyter.response/status status}))
                                             [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]))))
+     "execute_result" (fn [{{:keys [session msg-id]}         :parent-header
+                            {:keys [data metadata execution-count]} :content}]
+                        (when (= (:session config) session)
+                          (d/transact! (:conn config)
+                                       (conj (vec (util/tx-data-from-map -1 {:jupyter.response/execution-count execution-count
+                                                                             :jupyter.response/data data
+                                                                             :jupyter.response/metadata metadata}))
+                                             [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]))))
      "stream" (fn [{{:keys [session msg-id]} :parent-header
                     content                  :content
                     :as msg}]
