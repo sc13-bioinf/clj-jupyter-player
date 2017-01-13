@@ -1,5 +1,6 @@
 (ns clj-jupyter-player.shell
   (:require [clojure.pprint :as pprint]
+            [clojure.data.json :as json]
             [clojure.core.async :as async]
             [taoensso.timbre :as log]
             [clj-jupyter-player.util :as util]
@@ -34,6 +35,7 @@
 ;;; Sockets
 
 (defn available-local-socket
+  "We obtain a free local port"
   []
   (let [ss (ServerSocket.)
         _ (.setReuseAddress ss true)
@@ -41,7 +43,7 @@
     ss))
 
 (defn reserve-port
-  "We obtain a free local port"
+  "Get the port bound by the socket"
   [^ServerSocket tmp-socket]
   [(.getLocalPort tmp-socket) tmp-socket])
 
@@ -105,7 +107,7 @@
 ;;; Send
 
 (defn map->blobs [{:keys [identities] :as message} signer]
-  (let [data-blobs (map (comp util/edn->json message)
+  (let [data-blobs (map (comp json/write-str util/edn->json message)
                         [:header :parent-header :metadata :content])
         signature  (signer data-blobs)]
     (concat identities [DELIM signature] data-blobs)))
@@ -127,7 +129,7 @@
   (let [decoded-blobs             (map (fn [^Msg msg] (String. (.data msg))) blobs)
         [ids [delim sign & data]] (split-with (complement #{DELIM}) decoded-blobs)]
     (-> (zipmap [:header :parent-header :metadata :content]
-                (map util/json->edn data))
+                (map (comp util/json->edn json/read-str) data))
         (assoc :signature sign :identities ids))))
 
 (defn receive-from-socket

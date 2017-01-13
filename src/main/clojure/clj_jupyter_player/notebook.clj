@@ -47,7 +47,7 @@
     (cond
       (contains? response :jupyter.response/stream) (assoc (:jupyter.response/stream response) "output_type" "stream")
       (contains? response :jupyter.response/data) {"output_type" "display_data"
-                                                   "data" (:jupyter.response/data response)
+                                                   "data" (util/edn->json (:jupyter.response/data response))
                                                    "metadata" (:jupyter.response/metadata response)}
       :else (throw (Exception. (str "Could not find known response type in " response))))))
 

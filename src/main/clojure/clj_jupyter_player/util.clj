@@ -2,7 +2,6 @@
   (:require [clojure
              [string :as string]
              [walk :as walk]]
-            [clojure.data.json :as json]
             [clojure.java.io :as io]
             [datascript.core :as d])
   (:import [java.io StringWriter PrintWriter]))
@@ -20,18 +19,17 @@
 (defn snake->kebab [string]
   (string/replace string #"_" "-"))
 
-(defn json->edn [json-string]
+(defn json->edn [json-data]
   (let [f (fn [[k v]] (if (string? k) [(keyword (snake->kebab k)) v] [k v]))]
     (walk/postwalk (fn [x] (if (map? x) (into {} (map f x)) x))
-                   (json/read-str json-string))))
+                   json-data)))
 
 (defn kebab->snake [string]
   (string/replace string #"-" "_"))
 
 (defn edn->json [edn-map]
-  (json/write-str
-   (let [f (fn [[k v]] (if (keyword? k) [(kebab->snake (name k)) v] [k v]))]
-     (walk/postwalk (fn [x] (if (map? x) (into {} (map f x)) x)) edn-map))))
+  (let [f (fn [[k v]] (if (keyword? k) [(kebab->snake (string/join "/" (remove nil? [(namespace k) (name k)]))) v] [k v]))]
+     (walk/postwalk (fn [x] (if (map? x) (into {} (map f x)) x)) edn-map)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Time
