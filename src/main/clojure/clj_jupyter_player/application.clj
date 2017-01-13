@@ -21,6 +21,9 @@
         sorted-responses (sort-by #(get response-order (:db/id %)) responses)
         last-execution-state (last (remove nil? (map :jupyter.response/execution-state sorted-responses)))
         response-status (remove nil? (map :jupyter.response/status sorted-responses))]
+    ;;(log/info "sorted-responses: " (vec sorted-responses))
+    ;;(log/info "last-execution-state: " last-execution-state)
+    ;;(log/info "response-status: " (vec response-status))
     (or (and (nil? last-execution-state)
              (some #(= "aborted" %) response-status))
         (and (= last-execution-state "idle")
@@ -45,10 +48,11 @@
   (let [notebook (d/pull @conn '[:notebook/loaded {:notebook/cells [:notebook.cell/type :notebook.cell/empty? :notebook.cell.player/execute-request]}] [:db/ident :notebook])]
     (when (:notebook/loaded notebook)
       (when-let [cells (:notebook/cells notebook)]
-        (log/info "notebook-completed? cells: " (vec (map (partial cell-completed? conn) cells)))
-        (when (every? (partial cell-completed? conn) cells)
-          (log/info "send notebook-done")
-          (async/>!! notebook-channel :notebook-done))))))
+        (let [cell-status (map (partial cell-completed? conn) cells)
+              _ (log/info "notebook-completed? cells: " (vec cell-status))]
+          (when (every? identity cell-status)
+            (log/info "send notebook-done")
+            (async/>!! notebook-channel :notebook-done)))))))
 
 (defn kernel-shutdown?
   "Send a message on the channel when the kernel has shutdown"
