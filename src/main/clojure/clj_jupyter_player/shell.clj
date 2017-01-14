@@ -170,6 +170,14 @@
                 (when (= (:session config) session)
                   (d/transact! (:conn config) [[:db/add -1 :jupyter.response/execution-state execution-state]
                                                [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]])))
+     "display_data" (fn [{{:keys [session msg-id]} :parent-header
+                          {:keys [data metadata]} :content}]
+                      (when (= (:session config) session)
+                        (d/transact! (:conn config)
+                                     (conj (vec (util/tx-data-from-map -1 {:jupyter.response/data data
+                                                                           :jupyter.response/metadata metadata}))
+                                             [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]))))
+
      "error" (fn [{{:keys [session msg-id]} :parent-header
                    {:keys [status ename evalue traceback]} :content}]
                (when (= (:session config) session)
