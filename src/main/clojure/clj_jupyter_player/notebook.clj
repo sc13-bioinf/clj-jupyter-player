@@ -1,5 +1,8 @@
 (ns clj-jupyter-player.notebook
   (:require [clojure.core.async :as async]
+            [clojure.string :as string]
+            [clojure.data.json :as json]
+            [clojure.java.io :as io]
             [taoensso.timbre :as log]
             [datascript.core :as d]
             [clj-jupyter-player.util :as util]))
@@ -49,6 +52,10 @@
       (contains? response :jupyter.response/data) {"output_type" "display_data"
                                                    "data" (util/edn->json (:jupyter.response/data response))
                                                    "metadata" (:jupyter.response/metadata response)}
+      (contains? response :jupyter.response/ename) {"output_type" "error"
+                                                    "ename" (:jupyter.response/ename response)
+                                                    "evalue" (:jupyter.response/evalue response)
+                                                    "traceback" (:jupyter.response/traceback response)}
       :else (throw (Exception. (str "Could not find known response type in " response))))))
 
 (defn render-cell-default
@@ -65,7 +72,7 @@
             _ (log/info "sorted-responses: " sorted-responses)
             execution-count (:jupyter.response/execution-count (last (filter #(contains? % :jupyter.response/execution-count) sorted-responses)))
             _ (log/info "execution-count: " execution-count)
-            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream :jupyter.response/data} (keys %))) sorted-responses))
+            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream :jupyter.response/data :jupyter.response/ename} (keys %))) sorted-responses))
             _ (log/info "output-responses: " output-responses)]
         (assoc (render-cell-default cell) "execution_count" execution-count
                                           "outputs" (render-output-responses output-responses)))
@@ -92,3 +99,25 @@
      "nbformat_minor" (:notebook/nbformat-minor notebook)
      "cells" (for [cell (:notebook/cells notebook)]
                (render-cell conn cell))}))
+
+(defn splice-cells
+  "Update cells at the given index with cells from the preload notebook"
+  [notebook-cells preload-notebook-file update-preload-index]
+  (if (nil? preload-notebook-file)
+    notebook-cells
+    (if (and (>= update-preload-index 0)
+             (< update-preload-index (count notebook-cells)))
+      (let [preload-notebook (with-open [r (io/reader preload-notebook-file)]
+                               (json/read r))
+            [notebook-before notebook-after] (split-at update-preload-index notebook-cells)]
+        (if (every? #(and (contains? % "cell_type")
+                          (contains? % "metadata")
+                          (contains? % "source")) (get preload-notebook "cells"))
+          (concat notebook-before (get preload-notebook "cells") notebook-after)
+          (do
+            (log/error "All preload-notebook cells must contain 'cell_type', 'metadata' and 'source'")
+            nil)))
+      (do
+        (log/error (string/join "" ["update-preload-index '" update-preload-index "' out of range 0-" (count notebook-cells)]))
+      nil))))
+

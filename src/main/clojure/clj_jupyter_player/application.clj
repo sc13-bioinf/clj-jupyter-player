@@ -70,7 +70,7 @@
         (log/info "kernel-shutdown? incomplete: " responses)))))
 
 (defn run-notebook
-  [tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file]
+  [tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index]
   (let [schema {:db/ident {:db/unique :db.unique/identity}
                 :jupyter/msg-id {:db/unique :db.unique/identity}
                 :jupyter/response {:db/cardinality :db.cardinality/many
@@ -99,6 +99,11 @@
                    (json/read r))]
     (async/go-loop [msg (async/<! notebook-channel)]
       (cond
+        (= msg :abort) (do
+                         (d/unlisten! conn :notebook-done)
+                         (d/listen! conn :kernel-shutdown (partial kernel-shutdown? conn notebook-channel))
+                         (async/>! shell-channel {:command :shutdown})
+                         (recur (async/<! notebook-channel)))
         (= msg :notebook-done) (do
                                  (d/unlisten! conn :notebook-done)
                                  (d/listen! conn :kernel-shutdown (partial kernel-shutdown? conn notebook-channel))
@@ -116,14 +121,20 @@
     (log/info "start sleep")
     (Thread/sleep 1000)
     (log/info "end sleep")
-    (notebook/execute-notebook conn notebook)
-    (doseq [cell (get notebook "cells")]
-      (notebook/execute-cell conn shell-channel cell))
-    (notebook/execute-loaded conn)
+    (let [cells (notebook/splice-cells (get notebook "cells") preload-notebook-file update-preload-index)]
+        (if (nil? cells)
+          (do
+            (log/error "Failed to run notebook, invalid cells")
+            (async/>!! notebook-channel :abort))
+          (do
+            (notebook/execute-notebook conn notebook)
+            (doseq [cell cells]
+              (notebook/execute-cell conn shell-channel cell))
+            (notebook/execute-loaded conn))))
     shell))
 
 (defn app
-  ([tmp-dir kernel-config-file notebook-file notebook-output-file]
+  ([tmp-dir kernel-config-file notebook-file notebook-output-file preload-notebook-file update-preload-index]
   (let [transport "tcp"
         ip "127.0.0.1"
         secret-key (str (UUID/randomUUID))
@@ -153,14 +164,14 @@
                                       :connection-file connection-file
                                       :tmp-dir tmp-dir}))]
     (try
-      (when-let [shell (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file)]
+      (when-let [shell (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
         @kernel
         @shell)
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
       (finally (util/recursive-delete-dir tmp-dir)))
     (shutdown-agents)))
-  ([tmp-dir kernel-config-file notebook-file notebook-output-file debug-connection-file]
+  ([tmp-dir kernel-config-file notebook-file notebook-output-file preload-notebook-file update-preload-index debug-connection-file]
   (let [connection-config (with-open [r (io/reader debug-connection-file)]
                             (json/read r))
         transport    (get connection-config "transport")
@@ -172,7 +183,7 @@
         control-port (get connection-config "control_port")
         shell-port   (get connection-config "shell_port")]
     (try
-      (when-let [shell (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file)]
+      (when-let [shell (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
         @shell)
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
