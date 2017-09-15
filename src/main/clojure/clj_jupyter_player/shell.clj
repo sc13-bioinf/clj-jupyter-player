@@ -68,6 +68,8 @@
           hb-socket      (ZMQ/socket ctx ZMQ/ZMQ_REQ)
           control-socket (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
           shell-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
+          _ (.setSocketOpt control-socket ZMQ/ZMQ_LINGER (int 0))
+          _ (.setSocketOpt shell-socket ZMQ/ZMQ_LINGER (int 0))
           addr         (partial str transport "://" ip ":")
           stdin-socket-connected   (.connect stdin-socket   (addr stdin-port))
           iopub-socket-connected   (.connect iopub-socket   (addr iopub-port))
@@ -93,8 +95,9 @@
   (close [{:keys [ctx ports] :as this}]
     (doseq [socket (vals (dissoc this :signer :ctx :config :ports))]
       (ZMQ/close socket))
+    (log/info "closed all sockets")
     (ZMQ/term ctx)
-    (log/info "All shell sockets closed.")))
+    (log/info "Terminated shell socket context.")))
 
 (defn create-sockets [config]
   (util/init (->SocketSystem config)))
@@ -142,9 +145,7 @@
     ;;  (log/info "msg: " msg)
     ;;  (log/info "shutdown?: " shutdown?))
     (if shutdown?
-      (do
-        (log/info "shutdown receive from socket")
-        (async/close! ch-req))
+      (async/close! ch-req)
       (if (nil? blob)
         (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
                []
@@ -333,4 +334,4 @@
             (log/info "shutdown shell-request listener")
             (async/>!! ch-close :stop)
             (Thread/sleep 1000))))
-      (log/info "Exiting loop"))))
+      (log/info "Exiting shell loop"))))

@@ -41,11 +41,13 @@
    ["-u" "--update-preload-at-index UPDATE_PRELOAD_AT_INDEX" "Index in the list of cells where the preload notebook will be placed"
     :id :update-preload-at-index
     :parse-fn #(try (Integer. (re-find  #"\d+" %)) (catch NumberFormatException nfe nil))
-    :validate [number? "Preload update index must be an integer"]]])
+    :validate [number? "Preload update index must be an integer"]]
+   ["-e" "--extra-logging"]])
 
 (defn -main [& args]
   (let [opts (parse-opts args cli-options)
-        options (:options opts)]
+        options (:options opts)
+        _ (when-not (:extra-logging options) (log/set-level! :info))]
     (cond
       (:errors opts) (doseq [e (:errors opts)] (.println *err* e))
       (:help options) (usage "" (:summary opts))

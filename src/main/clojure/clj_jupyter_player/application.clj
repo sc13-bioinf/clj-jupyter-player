@@ -70,7 +70,7 @@
         (log/info "kernel-shutdown? incomplete: " responses)))))
 
 (defn run-notebook
-  [tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index]
+  [tmp-dir notebook-channel stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index]
   (let [schema {:db/ident {:db/unique :db.unique/identity}
                 :jupyter/msg-id {:db/unique :db.unique/identity}
                 :jupyter/response {:db/cardinality :db.cardinality/many
@@ -81,9 +81,14 @@
         datoms [(d/datom 1 :db/ident :notebook)
                 (d/datom 1 :notebook/loaded false)]
         conn (d/conn-from-db (d/init-db datoms schema))
-        notebook-channel (async/chan)
         _ (d/listen! conn :notebook-done (partial notebook-completed? conn notebook-channel))
-        shell-channel (async/chan)
+        notebook (with-open [r (io/reader notebook-file)]
+                   (json/read r))
+        shell-channel-buffer-size (if-let [cells (get notebook "cells")]
+                                    (+ (count cells) 2)
+                                    2)
+        _ (log/info "shell-channel-buffer-size: " shell-channel-buffer-size)
+        shell-channel (async/chan shell-channel-buffer-size)
         shell (future (shell/start {:conn conn
                                     :ch shell-channel
                                     :stdin-port stdin-port
@@ -94,9 +99,7 @@
                                     :transport transport
                                     :ip ip
                                     :secret-key secret-key
-                                    :session (str (UUID/randomUUID))}))
-        notebook (with-open [r (io/reader notebook-file)]
-                   (json/read r))]
+                                    :session (str (UUID/randomUUID))}))]
     (async/go-loop [msg (async/<! notebook-channel)]
       (cond
         (= msg :abort) (do
@@ -112,8 +115,10 @@
                                  (async/>! shell-channel {:command :shutdown})
                                  (recur (async/<! notebook-channel)))
         (= msg :kernel-shutdown) (do
+                                   (d/unlisten! conn :notebook-done);; Can be triggered directly if kernel fails
                                    (d/unlisten! conn :kernel-shutdown)
                                    (async/>! shell-channel {:command :stop})
+                                   (async/close! notebook-channel)
                                    (log/info "shutdown notebook listener"))
         :else (do
                 (log/error "Say what? Don't understand notebook-channel msg: " msg)
@@ -162,10 +167,14 @@
                         (json/read r))
         kernel (future (kernel/start {:kernel-config kernel-config
                                       :connection-file connection-file
-                                      :tmp-dir tmp-dir}))]
+                                      :tmp-dir tmp-dir}))
+        notebook-channel (async/chan)]
     (try
-      (when-let [shell (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
-        @kernel
+      (when-let [shell (run-notebook tmp-dir notebook-channel stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
+        (do
+          @kernel
+          (log/info "Sending :kernel-shutdown to notebook")
+          (async/>!! notebook-channel :kernel-shutdown))
         @shell)
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
@@ -183,7 +192,7 @@
         control-port (get connection-config "control_port")
         shell-port   (get connection-config "shell_port")]
     (try
-      (when-let [shell (run-notebook tmp-dir stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
+      (when-let [shell (run-notebook tmp-dir (async/chan) stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
         @shell)
       (catch Exception e
         (log/error (util/stack-trace-to-string e)))
