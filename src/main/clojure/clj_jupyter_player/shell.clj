@@ -334,4 +334,10 @@
             (log/info "shutdown shell-request listener")
             (async/>!! ch-close :stop)
             (Thread/sleep 1000))))
-      (log/info "Exiting shell loop"))))
+      (log/info "Exiting shell loop")
+      (let [response-status (d/q '[:find [(pull ?e [:jupyter.response/status]) ...]
+                                   :where [?e :jupyter.response/status _]]
+                                 (-> config :conn d/db))]
+      (if (every? (comp #(= % "ok") :jupyter.response/status) response-status)
+        0
+        1)))))

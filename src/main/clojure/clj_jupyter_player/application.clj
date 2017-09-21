@@ -168,18 +168,20 @@
         kernel (future (kernel/start {:kernel-config kernel-config
                                       :connection-file connection-file
                                       :tmp-dir tmp-dir}))
-        notebook-channel (async/chan)]
-    (try
-      (when-let [shell (run-notebook tmp-dir notebook-channel stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
-        (do
-          @kernel
-          (log/info "Sending :kernel-shutdown to notebook")
-          (async/>!! notebook-channel :kernel-shutdown))
-        @shell)
-      (catch Exception e
-        (log/error (util/stack-trace-to-string e)))
-      (finally (util/recursive-delete-dir tmp-dir)))
-    (shutdown-agents)))
+        notebook-channel (async/chan)
+        exit-code (try
+                    (when-let [shell (run-notebook tmp-dir notebook-channel stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
+                      (do
+                        @kernel
+                        (log/info "Sending :kernel-shutdown to notebook")
+                        (async/>!! notebook-channel :kernel-shutdown))
+                      @shell)
+                    (catch Exception e
+                      (log/error (util/stack-trace-to-string e))
+                      1)
+                    (finally (util/recursive-delete-dir tmp-dir)))]
+    (shutdown-agents)
+    exit-code))
   ([tmp-dir kernel-config-file notebook-file notebook-output-file preload-notebook-file update-preload-index debug-connection-file]
   (let [connection-config (with-open [r (io/reader debug-connection-file)]
                             (json/read r))
@@ -190,11 +192,13 @@
         iopub-port   (get connection-config "iopub_port")
         hb-port      (get connection-config "hb_port")
         control-port (get connection-config "control_port")
-        shell-port   (get connection-config "shell_port")]
-    (try
-      (when-let [shell (run-notebook tmp-dir (async/chan) stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
-        @shell)
-      (catch Exception e
-        (log/error (util/stack-trace-to-string e)))
-      (finally (util/recursive-delete-dir tmp-dir)))
-    (shutdown-agents))))
+        shell-port   (get connection-config "shell_port")
+        exit-code (try
+                    (when-let [shell (run-notebook tmp-dir (async/chan) stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
+                      @shell)
+                    (catch Exception e
+                      (log/error (util/stack-trace-to-string e))
+                      1)
+                    (finally (util/recursive-delete-dir tmp-dir)))]
+    (shutdown-agents)
+    exit-code)))

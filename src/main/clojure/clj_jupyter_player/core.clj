@@ -15,7 +15,8 @@
                                "Usage:"
                                "\tPlease supply kernel config path, notebook path and notebook output path"
                                opt-summary
-                               ])))
+                               ]))
+  64)
 
 (def cli-options
   [["-h" "--help"]
@@ -47,31 +48,32 @@
 (defn -main [& args]
   (let [opts (parse-opts args cli-options)
         options (:options opts)
-        _ (when-not (:extra-logging options) (log/set-level! :info))]
-    (cond
-      (:errors opts) (doseq [e (:errors opts)] (.println *err* e))
-      (:help options) (usage "" (:summary opts))
-      (nil? (:kernel-config-path options)) (usage "Please supply kernel config path" (:summary opts))
-      (nil? (:notebook-path options)) (usage "Please supply notebook path" (:summary opts))
-      (nil? (:notebook-output-path options)) (usage "Please supply notebook output path" (:summary opts))
-      (= (count (into #{} [(nil? (:preload-notebook-path options))
-                           (nil? (:update-preload-at-index options))])) 2) (usage "You must supply preload notebook path with update preload index" (:summary opts))
-      (and (contains? options :kernel-config-path)
-           (contains? options :notebook-path)
-           (contains? options :notebook-output-path)) (let [tmp-dir (util/mk-tmp-dir :base-name "clj-jupyter-player")
-                                                            _ (log/info "tmp-dir: " tmp-dir)]
-                                                        (if (contains? options :debug-connection-path)
-                                                          (application/app tmp-dir
-                                                                           (:kernel-config-path options)
-                                                                           (:notebook-path options)
-                                                                           (:notebook-output-path options)
-                                                                           (:preload-notebook-path options)
-                                                                           (:update-preload-at-index options)
-                                                                           (:debug-connection-path options))
-                                                          (application/app tmp-dir
-                                                                           (:kernel-config-path options)
-                                                                           (:notebook-path options)
-                                                                           (:notebook-output-path options)
-                                                                           (:preload-notebook-path options)
-                                                                           (:update-preload-at-index options))))
-      :else (usage "" (:summary opts)))))
+        _ (when-not (:extra-logging options) (log/set-level! :info))
+        exit-code (cond
+                    (:errors opts) (doseq [e (:errors opts)] (.println *err* e))
+                    (:help options) (usage "" (:summary opts))
+                    (nil? (:kernel-config-path options)) (usage "Please supply kernel config path" (:summary opts))
+                    (nil? (:notebook-path options)) (usage "Please supply notebook path" (:summary opts))
+                    (nil? (:notebook-output-path options)) (usage "Please supply notebook output path" (:summary opts))
+                    (= (count (into #{} [(nil? (:preload-notebook-path options))
+                                         (nil? (:update-preload-at-index options))])) 2) (usage "You must supply preload notebook path with update preload index" (:summary opts))
+                    (and (contains? options :kernel-config-path)
+                         (contains? options :notebook-path)
+                         (contains? options :notebook-output-path)) (let [tmp-dir (util/mk-tmp-dir :base-name "clj-jupyter-player")
+                                                                          _ (log/info "tmp-dir: " tmp-dir)]
+                                                                      (if (contains? options :debug-connection-path)
+                                                                        (application/app tmp-dir
+                                                                                         (:kernel-config-path options)
+                                                                                         (:notebook-path options)
+                                                                                         (:notebook-output-path options)
+                                                                                         (:preload-notebook-path options)
+                                                                                         (:update-preload-at-index options)
+                                                                                         (:debug-connection-path options))
+                                                                        (application/app tmp-dir
+                                                                                         (:kernel-config-path options)
+                                                                                         (:notebook-path options)
+                                                                                         (:notebook-output-path options)
+                                                                                         (:preload-notebook-path options)
+                                                                                         (:update-preload-at-index options))))
+                    :else (usage "" (:summary opts)))]
+    (System/exit exit-code)))
