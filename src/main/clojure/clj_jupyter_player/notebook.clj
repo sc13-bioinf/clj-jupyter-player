@@ -25,11 +25,9 @@
         cell-eid (get (:tempids tx-result) -1)]
     (if (and (= cell-type "code")
              (not (empty? source)))
-      (do
-        (log/info "running source: " source)
         (async/>!! shell-channel {:command :send
                                   :cell-eid cell-eid
-                                  :source source})))))
+                                  :source source}))))
 
 (defn execute-loaded
   [conn]
@@ -69,11 +67,10 @@
   (if-let [request-eid (-> cell :notebook.cell.player/execute-request :db/id)]
     (if-let[responses (:jupyter/response (d/pull @conn '[{:jupyter/response [*]}] request-eid))]
       (let [sorted-responses (sort-responses conn request-eid responses)
-            _ (log/info "sorted-responses: " sorted-responses)
+            _ (log/debug "sorted-responses: " sorted-responses)
             execution-count (:jupyter.response/execution-count (last (filter #(contains? % :jupyter.response/execution-count) sorted-responses)))
-            _ (log/info "execution-count: " execution-count)
-            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream :jupyter.response/data :jupyter.response/ename} (keys %))) sorted-responses))
-            _ (log/info "output-responses: " output-responses)]
+            _ (log/debug "execution-count: " execution-count)
+            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream :jupyter.response/data :jupyter.response/ename} (keys %))) sorted-responses))]
         (assoc (render-cell-default cell) "execution_count" execution-count
                                           "outputs" (render-output-responses output-responses)))
       (assoc (render-cell-default cell) "execution_count" nil "outputs" []))
