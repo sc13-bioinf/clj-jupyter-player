@@ -1,4 +1,4 @@
-(defproject clj-jupyter-player "0.0.5"
+(defproject clj-jupyter-player "0.0.6"
   :description "A standalone player for Jupyter Notebooks."
   :url "https://github.com/sc13-bioinf/clj-jupyter-player.git"
   :license {:name "Eclipse Public License"
@@ -9,7 +9,7 @@
                  [org.clojure/tools.cli "0.3.3"]
                  [org.clojure/core.async "0.2.385"]
                  [datascript "0.15.5"]
-                 [org.zeromq/jeromq "0.3.5"]]
+                 [org.zeromq/jeromq "0.4.3"]]
   :main clj-jupyter-player.core
   :source-paths ["src/main/clojure"]
   :profiles

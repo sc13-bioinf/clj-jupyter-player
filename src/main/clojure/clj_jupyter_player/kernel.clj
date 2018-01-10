@@ -17,7 +17,7 @@
     (let [argv-with-connection (update-with-connection-file argv connection-file)
           _ (log/info "trying to run kernel with tmp-dir: " tmp-dir)
           kernel-process (process/run tmp-dir argv-with-connection)
-          _ (log/info "kernel-process: " kernel-process)]
+          _ (log/debug "kernel-process: " kernel-process)]
       (assoc this :process kernel-process)))
   (close [{:keys [process]}]
     (log/info "Kernel closed.")))

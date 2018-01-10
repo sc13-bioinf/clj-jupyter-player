@@ -49,7 +49,7 @@
     (when (:notebook/loaded notebook)
       (when-let [cells (:notebook/cells notebook)]
         (let [cell-status (map (partial cell-completed? conn) cells)
-              _ (log/info "notebook-completed? cells: " (vec cell-status))]
+              _ (log/debug "notebook-completed? cells: " (vec cell-status))]
           (when (every? identity cell-status)
             (log/info "send notebook-done")
             (async/>!! notebook-channel :notebook-done)))))))
@@ -87,7 +87,7 @@
         shell-channel-buffer-size (if-let [cells (get notebook "cells")]
                                     (+ (count cells) 2)
                                     2)
-        _ (log/info "shell-channel-buffer-size: " shell-channel-buffer-size)
+        _ (log/debug "shell-channel-buffer-size: " shell-channel-buffer-size)
         shell-channel (async/chan shell-channel-buffer-size)
         shell (future (shell/start {:conn conn
                                     :ch shell-channel
@@ -103,11 +103,13 @@
     (async/go-loop [msg (async/<! notebook-channel)]
       (cond
         (= msg :abort) (do
+                         (log/info "notebook abort")
                          (d/unlisten! conn :notebook-done)
                          (d/listen! conn :kernel-shutdown (partial kernel-shutdown? conn notebook-channel))
                          (async/>! shell-channel {:command :shutdown})
                          (recur (async/<! notebook-channel)))
         (= msg :notebook-done) (do
+                                 (log/info "notebook done")
                                  (d/unlisten! conn :notebook-done)
                                  (d/listen! conn :kernel-shutdown (partial kernel-shutdown? conn notebook-channel))
                                  (with-open [w (io/writer notebook-output-file)]
@@ -115,6 +117,7 @@
                                  (async/>! shell-channel {:command :shutdown})
                                  (recur (async/<! notebook-channel)))
         (= msg :kernel-shutdown) (do
+                                   (log/info "notebook shutdown")
                                    (d/unlisten! conn :notebook-done);; Can be triggered directly if kernel fails
                                    (d/unlisten! conn :kernel-shutdown)
                                    (async/>! shell-channel {:command :stop})
@@ -123,9 +126,9 @@
         :else (do
                 (log/error "Say what? Don't understand notebook-channel msg: " msg)
                 (recur (async/<! notebook-channel)))))
-    (log/info "start sleep")
+    (log/debug "start sleep")
     (Thread/sleep 1000)
-    (log/info "end sleep")
+    (log/debug "end sleep")
     (let [cells (notebook/splice-cells (get notebook "cells") preload-notebook-file update-preload-index)]
         (if (nil? cells)
           (do

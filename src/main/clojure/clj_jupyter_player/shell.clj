@@ -4,14 +4,16 @@
             [clojure.core.async :as async]
             [taoensso.timbre :as log]
             [clj-jupyter-player.util :as util]
-            [datascript.core :as d])
+            [datascript.core :as d]
+            [taoensso.timbre :as log])
   (:import [java.util Date]
            [java.net ServerSocket InetSocketAddress]
            [java.util UUID]
            java.io.Closeable
            javax.crypto.Mac
            javax.crypto.spec.SecretKeySpec
-           [zmq Msg SocketBase ZMQ Utils]))
+           [zmq Msg SocketBase Utils]
+           [org.zeromq ZMQ ZContext]))
 
 (set! *warn-on-reflection* true)
 
@@ -62,14 +64,14 @@
   (init [{{:keys [stdin-port iopub-port hb-port control-port shell-port transport ip secret-key]} :config
            :as                                    this}]
     (let [signer          (signer-fn secret-key)
-          ctx            (ZMQ/createContext)
-          stdin-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
-          iopub-socket   (ZMQ/socket ctx ZMQ/ZMQ_SUB)
-          hb-socket      (ZMQ/socket ctx ZMQ/ZMQ_REQ)
-          control-socket (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
-          shell-socket   (ZMQ/socket ctx ZMQ/ZMQ_DEALER)
-          _ (.setSocketOpt control-socket ZMQ/ZMQ_LINGER (int 0))
-          _ (.setSocketOpt shell-socket ZMQ/ZMQ_LINGER (int 0))
+          ^ZContext ctx            (ZContext.)
+          stdin-socket   (.createSocket ctx ZMQ/DEALER)
+          iopub-socket   (.createSocket ctx ZMQ/SUB)
+          hb-socket      (.createSocket ctx ZMQ/REQ)
+          control-socket (.createSocket ctx ZMQ/DEALER)
+          shell-socket   (.createSocket ctx ZMQ/DEALER)
+          _ (.setLinger control-socket (int 0))
+          _ (.setLinger shell-socket (int 0))
           addr         (partial str transport "://" ip ":")
           stdin-socket-connected   (.connect stdin-socket   (addr stdin-port))
           iopub-socket-connected   (.connect iopub-socket   (addr iopub-port))
@@ -83,7 +85,7 @@
                                     shell-socket-connected])
               (log/info "all sockets connected"))
           _ (when iopub-socket-connected
-              (.setSocketOpt iopub-socket ZMQ/ZMQ_SUBSCRIBE (.getBytes "")))]
+              (.subscribe iopub-socket ""))]
       (assoc this
              :signer signer
              :ctx ctx
@@ -92,11 +94,8 @@
              :hb-socket      hb-socket
              :control-socket control-socket
              :shell-socket   shell-socket)))
-  (close [{:keys [ctx ports] :as this}]
-    (doseq [socket (vals (dissoc this :signer :ctx :config :ports))]
-      (ZMQ/close socket))
-    (log/info "closed all sockets")
-    (ZMQ/term ctx)
+  (close [{:keys [^java.io.Closeable ctx] :as this}]
+    (.close ctx)
     (log/info "Terminated shell socket context.")))
 
 (defn create-sockets [config]
@@ -115,50 +114,61 @@
         signature  (signer data-blobs)]
     (concat identities [DELIM signature] data-blobs)))
 
-(defn send-message [^SocketBase socket message signer]
+(defn send-message [^org.zeromq.ZMQ$Socket socket message signer]
   (loop [[^String msg & r :as l] (map->blobs message signer)]
     (log/debug "Sending " msg)
     (if (seq r)
-      (do (ZMQ/send socket msg (+ ZMQ/ZMQ_SNDMORE ZMQ/ZMQ_DONTWAIT))
+      (do (.sendMore socket msg)
           (recur r))
-      (ZMQ/send socket msg 0))))
+      (.send socket msg))))
 
 ;;; Receive
 
-(defn receive-more? [socket]
-  (pos? (ZMQ/getSocketOption socket ZMQ/ZMQ_RCVMORE)))
-
 (defn blobs->map [blobs]
-  (let [decoded-blobs             (map (fn [^Msg msg] (String. (.data msg))) blobs)
+  (let [decoded-blobs (map #(String. ^bytes % "UTF-8") blobs)
         [ids [delim sign & data]] (split-with (complement #{DELIM}) decoded-blobs)]
     (-> (zipmap [:header :parent-header :metadata :content]
                 (map (comp util/json->edn json/read-str) data))
         (assoc :signature sign :identities ids))))
 
+(defn register-socket-with-poller
+  [^org.zeromq.ZMQ$Poller poller accumulator [poller-index [^org.zeromq.ZMQ$Socket socket ch-req :as item]]]
+  (let [_ (.register poller socket org.zeromq.ZMQ$Poller/POLLIN)]
+    (assoc accumulator poller-index item)))
+
+(defn receive-more?
+  [^org.zeromq.ZMQ$Socket socket]
+  (.hasReceiveMore socket))
+
 (defn receive-from-socket
-  [socket ch-req ch-close]
-  (async/go-loop [blob (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
-                  msg []
-                  shutdown? (async/poll! ch-close)]
-    ;;(when (not (nil? blob))
-    ;;  (log/info "blob: " blob)
-    ;;  (log/info "msg: " msg)
-    ;;  (log/info "shutdown?: " shutdown?))
-    (if shutdown?
-      (async/close! ch-req)
-      (if (nil? blob)
-        (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
-               []
-               (async/poll! ch-close))
-        (if (receive-more? socket)
-          (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
-                 (conj msg blob)
-                 (async/poll! ch-close))
-          (do
-            (async/>!! ch-req (blobs->map (conj msg blob)))
-            (recur (try (ZMQ/recv socket ZMQ/ZMQ_DONTWAIT) (catch IllegalStateException ise (log/error "Tried to read from closed socket") nil))
-                   []
-                   (async/poll! ch-close))))))))
+  [^org.zeromq.ZMQ$Socket socket]
+  (try
+    (.recv socket ZMQ/DONTWAIT)
+    (catch IllegalStateException ise
+      (log/error "Tried to read from closed socket") nil)))
+
+(defn receive-from-sockets
+  [^org.zeromq.ZMQ$Poller poller sockets ch-close]
+  (let [socket-map (reduce (partial register-socket-with-poller poller) {} (map-indexed vector sockets))]
+    (async/go-loop [[v ch] (async/alts! [ch-close
+                                         (async/timeout 500)])]
+      (if (= ch ch-close)
+        (log/info "shutting down")
+        (do
+          (.poll poller 200)
+          (doseq [poller-index [0 1 2]]
+            (let [^org.zeromq.ZMQ$Socket socket (get-in socket-map [poller-index 0])
+                  ch-req (get-in socket-map [poller-index 1])]
+              (when (.pollin poller poller-index)
+                (loop [blob (receive-from-socket socket)
+                       msg []]
+                  (when-not (nil? blob)
+                    (if (receive-more? socket)
+                      (recur (receive-from-socket socket)
+                             (conj msg blob))
+                      (async/>!! ch-req (blobs->map (conj msg blob)))))))))
+          (recur (async/alts! [ch-close
+                               (async/timeout 500)])))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Handler
@@ -298,31 +308,30 @@
 
 (defn start [config]
   (log/info "Starting shell...")
-  (with-open [^SocketSystem socket-system (create-sockets config)]
-    (let [handler (handler-fn config (dissoc socket-system :config :ctx))
-          iopub-socket (:iopub-socket socket-system)
-          hb-socket (:hb-socket socket-system)
-          control-socket (:control-socket socket-system)
-          shell-socket (:shell-socket socket-system)
-          ;;_ (log/info "shell-socket: " shell-socket)
-          ;;_ (log/info "shell-socket check tag: " (.checkTag ^SocketBase shell-socket))
-          ;;_ (log/info "iopub-socket check tag: " (.checkTag iopub-socket))
-          ch-close (async/chan)
-          mult-close (async/mult ch-close)
-          ch-req-iopub (async/chan)
-          ch-req-shell (async/chan)
-          ch-req-hb (async/chan)
-          ch-req (async/merge [ch-req-iopub ch-req-shell ch-req-hb] 3)]
-      (async/go-loop [request (async/<! ch-req)]
-        (if (nil? request)
-          (log/info "shutdown request listener")
-          (do
-            (handler request)
-            (recur (async/<! ch-req)))))
-      (receive-from-socket iopub-socket ch-req-iopub (async/tap mult-close (async/chan 1)))
-      (receive-from-socket shell-socket ch-req-shell (async/tap mult-close (async/chan 1)))
-      (receive-from-socket hb-socket ch-req-hb (async/tap mult-close (async/chan 1)))
-      (log/debug "Entering loop...")
+      (let [^SocketSystem socket-system (create-sockets config)
+            ^org.zeromq.ZMQ$Poller poller (.createPoller ^ZContext (:ctx socket-system) 3)
+            handler (handler-fn config (dissoc socket-system :config :ctx))
+            iopub-socket (:iopub-socket socket-system)
+            hb-socket (:hb-socket socket-system)
+            control-socket (:control-socket socket-system)
+            shell-socket (:shell-socket socket-system)
+            ch-close (async/chan)
+            ch-req-iopub (async/chan)
+            ch-req-shell (async/chan)
+            ch-req-hb (async/chan)
+            ch-req (async/merge [ch-req-iopub ch-req-shell ch-req-hb] 3)]
+        (async/go-loop [request (async/<! ch-req)]
+          (if (nil? request)
+            (log/info "shutdown request listener")
+            (do
+              (handler request)
+              (recur (async/<! ch-req)))))
+        (receive-from-sockets poller
+                              [[iopub-socket ch-req-iopub]
+                               [shell-socket ch-req-shell]
+                               [hb-socket ch-req-hb]]
+                              ch-close)
+      (log/info "Entering loop...")
       (loop [shell-request (async/<!! (:ch config))]
         (if (command (assoc shell-request :signer (:signer socket-system)
                                           :session (:session config)
@@ -340,4 +349,4 @@
                                  (-> config :conn d/db))]
       (if (every? (comp #(= % "ok") :jupyter.response/status) response-status)
         0
-        1)))))
+        1))))
