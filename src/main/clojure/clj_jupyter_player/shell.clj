@@ -148,12 +148,15 @@
       (log/error "Tried to read from closed socket") nil)))
 
 (defn receive-from-sockets
-  [^org.zeromq.ZMQ$Poller poller sockets ch-close]
-  (let [socket-map (reduce (partial register-socket-with-poller poller) {} (map-indexed vector sockets))]
+  [^ZContext context sockets ch-close]
+  (let [^org.zeromq.ZMQ$Poller poller (.createPoller context 3)
+        socket-map (reduce (partial register-socket-with-poller poller) {} (map-indexed vector sockets))]
     (async/go-loop [[v ch] (async/alts! [ch-close
                                          (async/timeout 500)])]
       (if (= ch ch-close)
-        (log/info "shutting down")
+        (do
+          (log/info "shutting down")
+          (.close context))
         (do
           (.poll poller 200)
           (doseq [poller-index [0 1 2]]
@@ -308,8 +311,7 @@
 
 (defn start [config]
   (log/info "Starting shell...")
-      (let [^SocketSystem socket-system (create-sockets config)
-            ^org.zeromq.ZMQ$Poller poller (.createPoller ^ZContext (:ctx socket-system) 3)
+      (let [socket-system (create-sockets config)
             handler (handler-fn config (dissoc socket-system :config :ctx))
             iopub-socket (:iopub-socket socket-system)
             hb-socket (:hb-socket socket-system)
@@ -326,7 +328,7 @@
             (do
               (handler request)
               (recur (async/<! ch-req)))))
-        (receive-from-sockets poller
+        (receive-from-sockets (:ctx socket-system)
                               [[iopub-socket ch-req-iopub]
                                [shell-socket ch-req-shell]
                                [hb-socket ch-req-hb]]
