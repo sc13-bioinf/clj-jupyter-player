@@ -122,14 +122,21 @@
           (recur r))
       (.send socket msg))))
 
+(defn send-message-raw [^org.zeromq.ZMQ$Socket socket ^String msg]
+  (log/debug "Sending raw msg " msg)
+  (.send socket msg))
+
 ;;; Receive
 
 (defn blobs->map [blobs]
-  (let [decoded-blobs (map #(String. ^bytes % "UTF-8") blobs)
-        [ids [delim sign & data]] (split-with (complement #{DELIM}) decoded-blobs)]
-    (-> (zipmap [:header :parent-header :metadata :content]
-                (map (comp util/json->edn json/read-str) data))
-        (assoc :signature sign :identities ids))))
+  (let [decoded-blobs (map #(String. ^bytes % "UTF-8") blobs)]
+    (if (and (= 1 (count decoded-blobs))
+             (= "ping" (first decoded-blobs)))
+      {:header {:msg-type "heartbeat"}}
+      (let [[ids [delim sign & data]] (split-with (complement #{DELIM}) decoded-blobs)]
+        (-> (zipmap [:header :parent-header :metadata :content]
+                    (map (comp util/json->edn json/read-str) data))
+          (assoc :signature sign :identities ids))))))
 
 (defn register-socket-with-poller
   [^org.zeromq.ZMQ$Poller poller accumulator [poller-index [^org.zeromq.ZMQ$Socket socket ch-req :as item]]]
@@ -179,7 +186,8 @@
 (defn response-map [config {:keys [shell-socket iopub-socket]}]
   ;;(log/info "response map config: " config)
   (let [signer          (signer-fn (:secret-key config))]
-    {"status" (fn [{{:keys [session msg-id]} :parent-header
+    {"heartbeat" (fn [_] (log/debug "heartbeat"))
+     "status" (fn [{{:keys [session msg-id]} :parent-header
                     {:keys [execution-state]} :content}]
                 (when (= (:session config) session)
                   (d/transact! (:conn config) [[:db/add -1 :jupyter.response/execution-state execution-state]
@@ -334,18 +342,25 @@
                                [hb-socket ch-req-hb]]
                               ch-close)
       (log/info "Entering loop...")
-      (loop [shell-request (async/<!! (:ch config))]
-        (if (command (assoc shell-request :signer (:signer socket-system)
-                                          :session (:session config)
-                                          :shell-socket shell-socket
-                                          :control-socket control-socket
-                                          :conn (:conn config)))
-          (recur (async/<!! (:ch config)))
+      (async/go-loop [[v ch] (async/alts! [(:ch config)
+                                           (async/timeout 5000)])]
+        (if (= ch (:ch config))
+          (if (command (assoc v :signer (:signer socket-system)
+                                :session (:session config)
+                                :shell-socket shell-socket
+                                :control-socket control-socket
+                                :conn (:conn config)))
+              (recur (async/alts! [(:ch config)
+                                   (async/timeout 5000)]))
+              (do
+               (log/info "shutdown shell-request listener")
+               (async/>!! ch-close :stop)))
           (do
-            (log/info "shutdown shell-request listener")
-            (async/>!! ch-close :stop)
-            (Thread/sleep 1000))))
+            (send-message-raw hb-socket "ping")
+            (recur (async/alts! [(:ch config)
+                                 (async/timeout 5000)])))))
       (log/info "Exiting shell loop")
+      (Thread/sleep 1000)
       (let [response-status (d/q '[:find [(pull ?e [:jupyter.response/status]) ...]
                                    :where [?e :jupyter.response/status _]]
                                  (-> config :conn d/db))]
