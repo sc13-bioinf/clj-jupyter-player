@@ -139,9 +139,9 @@
           (assoc :signature sign :identities ids))))))
 
 (defn register-socket-with-poller
-  [^org.zeromq.ZMQ$Poller poller accumulator [poller-index [^org.zeromq.ZMQ$Socket socket ch-req :as item]]]
+  [^org.zeromq.ZMQ$Poller poller accumulator [poller-index ^org.zeromq.ZMQ$Socket socket]]
   (let [_ (.register poller socket org.zeromq.ZMQ$Poller/POLLIN)]
-    (assoc accumulator poller-index item)))
+    (assoc accumulator poller-index socket)))
 
 (defn receive-more?
   [^org.zeromq.ZMQ$Socket socket]
@@ -155,30 +155,19 @@
       (log/error "Tried to read from closed socket") nil)))
 
 (defn receive-from-sockets
-  [^ZContext context sockets ch-close]
-  (let [^org.zeromq.ZMQ$Poller poller (.createPoller context 3)
-        socket-map (reduce (partial register-socket-with-poller poller) {} (map-indexed vector sockets))]
-    (async/go-loop [[v ch] (async/alts! [ch-close
-                                         (async/timeout 500)])]
-      (if (= ch ch-close)
-        (do
-          (log/info "shutting down")
-          (.close context))
-        (do
-          (.poll poller 200)
-          (doseq [poller-index [0 1 2]]
-            (let [^org.zeromq.ZMQ$Socket socket (get-in socket-map [poller-index 0])
-                  ch-req (get-in socket-map [poller-index 1])]
-              (when (.pollin poller poller-index)
-                (loop [blob (receive-from-socket socket)
-                       msg []]
-                  (when-not (nil? blob)
-                    (if (receive-more? socket)
-                      (recur (receive-from-socket socket)
-                             (conj msg blob))
-                      (async/>!! ch-req (blobs->map (conj msg blob)))))))))
-          (recur (async/alts! [ch-close
-                               (async/timeout 500)])))))))
+  [^org.zeromq.ZMQ$Poller poller socket-map ch-req]
+  (.poll poller 200)
+  (doseq [poller-index [0 1 2]]
+    (let [^org.zeromq.ZMQ$Socket socket (get socket-map poller-index)]
+      (when (.pollin poller poller-index)
+        (loop [blob (receive-from-socket socket)
+               msg []]
+          (when-not (nil? blob)
+            (if (receive-more? socket)
+              (recur (receive-from-socket socket)
+                     (conj msg blob))
+              (when-not (async/offer! ch-req (blobs->map (conj msg blob)))
+                (throw (Exception. "Failed to offer request to ch-req"))))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Handler
@@ -318,52 +307,51 @@
 ;;; Worker
 
 (defn start [config]
-  (log/info "Starting shell...")
-      (let [socket-system (create-sockets config)
-            handler (handler-fn config (dissoc socket-system :config :ctx))
-            iopub-socket (:iopub-socket socket-system)
-            hb-socket (:hb-socket socket-system)
-            control-socket (:control-socket socket-system)
-            shell-socket (:shell-socket socket-system)
-            ch-close (async/chan)
-            ch-req-iopub (async/chan)
-            ch-req-shell (async/chan)
-            ch-req-hb (async/chan)
-            ch-req (async/merge [ch-req-iopub ch-req-shell ch-req-hb] 3)]
-        (async/go-loop [request (async/<! ch-req)]
-          (if (nil? request)
-            (log/info "shutdown request listener")
-            (do
-              (handler request)
-              (recur (async/<! ch-req)))))
-        (receive-from-sockets (:ctx socket-system)
-                              [[iopub-socket ch-req-iopub]
-                               [shell-socket ch-req-shell]
-                               [hb-socket ch-req-hb]]
-                              ch-close)
-      (log/info "Entering loop...")
-      (async/go-loop [[v ch] (async/alts! [(:ch config)
-                                           (async/timeout 5000)])]
-        (if (= ch (:ch config))
-          (if (command (assoc v :signer (:signer socket-system)
-                                :session (:session config)
-                                :shell-socket shell-socket
-                                :control-socket control-socket
-                                :conn (:conn config)))
-              (recur (async/alts! [(:ch config)
-                                   (async/timeout 5000)]))
-              (do
-               (log/info "shutdown shell-request listener")
-               (async/>!! ch-close :stop)))
-          (do
-            (send-message-raw hb-socket "ping")
-            (recur (async/alts! [(:ch config)
-                                 (async/timeout 5000)])))))
-      (log/info "Exiting shell loop")
+  (let [_ (log/info "Starting shell...")
+        socket-system (create-sockets config)
+        handler (handler-fn config (dissoc socket-system :config :ctx))
+        iopub-socket (:iopub-socket socket-system)
+        hb-socket (:hb-socket socket-system)
+        control-socket (:control-socket socket-system)
+        shell-socket (:shell-socket socket-system)
+        ch-req (async/chan 3)
+        ^ZContext context (:ctx socket-system)
+        ^org.zeromq.ZMQ$Poller poller (.createPoller context 3)
+        sockets [iopub-socket shell-socket hb-socket]
+        socket-map (reduce (partial register-socket-with-poller poller) {} (map-indexed vector sockets))
+        loop-counter (atom 1)]
+    (async/go-loop [request (async/<! ch-req)]
+      (if (nil? request)
+        (log/debug "shutdown request listener")
+        (do
+          (handler request)
+          (recur (async/<! ch-req)))))
+    (Thread/sleep 3000)
+    (log/info "Entering shell loop...")
+    (while (not (.. Thread currentThread isInterrupted))
+      (receive-from-sockets poller socket-map ch-req)
+      (when (zero? (mod (swap! loop-counter inc) 5))
+        (send-message-raw hb-socket "ping"))
+      (if-let [v (async/poll! (:ch config))]
+        (when-not (command (assoc v :signer (:signer socket-system)
+                                    :session (:session config)
+                                    :shell-socket shell-socket
+                                    :control-socket control-socket
+                                    :conn (:conn config)))
+          (log/info "shutdown shell-request listener")
+          (.close context)
+          (async/close! ch-req)
+          (.. Thread currentThread interrupt))
+        (Thread/sleep 500)))
+    (try
       (Thread/sleep 1000)
-      (let [response-status (d/q '[:find [(pull ?e [:jupyter.response/status]) ...]
-                                   :where [?e :jupyter.response/status _]]
-                                 (-> config :conn d/db))]
+      (catch InterruptedException ie
+        (log/debug "Cleared while loop interupt")))
+    (log/info "Exiting shell loop")
+    (Thread/sleep 1000)
+    (let [response-status (d/q '[:find [(pull ?e [:jupyter.response/status]) ...]
+                                 :where [?e :jupyter.response/status _]]
+                               (-> config :conn d/db))]
       (if (every? (comp #(= % "ok") :jupyter.response/status) response-status)
         0
         1))))
