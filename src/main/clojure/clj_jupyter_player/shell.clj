@@ -140,7 +140,7 @@
 
 (defn register-socket-with-poller
   [^org.zeromq.ZMQ$Poller poller accumulator [poller-index ^org.zeromq.ZMQ$Socket socket]]
-  (let [_ (.register poller socket org.zeromq.ZMQ$Poller/POLLIN)]
+  (let [_ (.register poller socket (bit-or org.zeromq.ZMQ$Poller/POLLIN org.zeromq.ZMQ$Poller/POLLERR))]
     (assoc accumulator poller-index socket)))
 
 (defn receive-more?
@@ -156,9 +156,13 @@
 
 (defn receive-from-sockets
   [^org.zeromq.ZMQ$Poller poller socket-map ch-req]
+  (log/debug "pre call to poll")
   (.poll poller 200)
+  (log/debug "post call to poll")
   (doseq [poller-index [0 1 2]]
     (let [^org.zeromq.ZMQ$Socket socket (get socket-map poller-index)]
+      (when (.pollerr poller poller-index)
+        (log/error "Got pollerr from: " poller-index))
       (when (.pollin poller poller-index)
         (loop [blob (receive-from-socket socket)
                msg []]
@@ -342,7 +346,7 @@
           (.close context)
           (async/close! ch-req)
           (.. Thread currentThread interrupt))
-        (Thread/sleep 500)))
+        (Thread/sleep 1000)))
     (try
       (Thread/sleep 1000)
       (catch InterruptedException ie
