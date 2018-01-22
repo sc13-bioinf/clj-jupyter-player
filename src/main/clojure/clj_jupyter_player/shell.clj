@@ -70,6 +70,8 @@
           hb-socket      (.createSocket ctx ZMQ/REQ)
           control-socket (.createSocket ctx ZMQ/DEALER)
           shell-socket   (.createSocket ctx ZMQ/DEALER)
+          _ (.setLinger iopub-socket (int 0))
+          _ (.setLinger hb-socket (int 0))
           _ (.setLinger control-socket (int 0))
           _ (.setLinger shell-socket (int 0))
           addr         (partial str transport "://" ip ":")
