@@ -300,11 +300,12 @@
                        [:db/add cell-eid :notebook.cell.player/execute-request -1]])
     (send-message shell-socket msg signer)
     true))
-(defmethod command :shutdown [{:keys [control-socket signer session conn]}]
-  (let [msg (create-shutdown-request-msg session true)]
+(defmethod command :shutdown [{:keys [control-socket signer session conn loop-counter]}]
+  (let [msg (create-shutdown-request-msg session false)]
     (d/transact! conn [[:db/add -1 :jupyter/msg-id (get-in msg [:header "msg_id"])]
                        [:db/add -1 :jupyter.player/sent (Date.)]
                        [:db/add -1 :notebook.player/shutdown-request true]])
+    (reset! loop-counter 0)
     (send-message control-socket msg signer)
     true))
 (defmethod command :stop [_] false)
@@ -336,14 +337,16 @@
     (log/info "Entering shell loop...")
     (while (not (.. Thread currentThread isInterrupted))
       (receive-from-sockets poller socket-map ch-req)
-      (when (zero? (mod (swap! loop-counter inc) 5))
+      (when (and (-> loop-counter deref zero? not)
+                 (zero? (mod (swap! loop-counter inc) 5)))
         (send-message-raw hb-socket "ping"))
       (if-let [v (async/poll! (:ch config))]
         (when-not (command (assoc v :signer (:signer socket-system)
                                     :session (:session config)
                                     :shell-socket shell-socket
                                     :control-socket control-socket
-                                    :conn (:conn config)))
+                                    :conn (:conn config)
+                                    :loop-counter loop-counter))
           (log/info "shutdown shell-request listener")
           (.close context)
           (async/close! ch-req)

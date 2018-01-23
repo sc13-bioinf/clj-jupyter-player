@@ -171,6 +171,8 @@
         kernel (future (kernel/start {:kernel-config kernel-config
                                       :connection-file connection-file
                                       :tmp-dir tmp-dir}))
+        _ (Thread/sleep 10000)
+        _ (log/info "waited for kernel to start")
         notebook-channel (async/chan)
         exit-code (try
                     (when-let [shell (run-notebook tmp-dir notebook-channel stdin-port iopub-port hb-port control-port shell-port transport ip secret-key notebook-file notebook-output-file preload-notebook-file update-preload-index)]
