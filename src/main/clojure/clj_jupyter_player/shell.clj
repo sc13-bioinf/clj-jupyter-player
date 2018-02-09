@@ -159,7 +159,11 @@
 (defn receive-from-sockets
   [^org.zeromq.ZMQ$Poller poller socket-map ch-req]
   (log/debug "pre call to poll")
-  (.poll poller 200)
+  (let [poll-f (future (.poll poller 200))
+        poll-r (deref poll-f 10000 :timeout)]
+    (when (= poll-r :timeout)
+      (log/error "epoll bug?")
+      (future-cancel poll-f)))
   (log/debug "post call to poll")
   (doseq [poller-index [0 1 2]]
     (let [^org.zeromq.ZMQ$Socket socket (get socket-map poller-index)]
