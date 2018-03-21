@@ -127,7 +127,7 @@
                 (log/error "Say what? Don't understand notebook-channel msg: " msg)
                 (recur (async/<! notebook-channel)))))
     (log/debug "start sleep")
-    (Thread/sleep 1000)
+    (Thread/sleep 25000)
     (log/debug "end sleep")
     (let [cells (notebook/splice-cells (get notebook "cells") preload-notebook-file update-preload-index)]
         (if (nil? cells)
