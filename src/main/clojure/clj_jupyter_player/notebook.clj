@@ -196,3 +196,10 @@
         (log/error (string/join "" ["update-preload-index '" update-preload-index "' out of range 0-" (count notebook-cells)]))
       nil))))
 
+(defn success?
+  [conn]
+  (let [errors (d/q '[:find [(pull ?e [*]) ...]
+                      :where [?e :jupyter.response/ename _]]
+                    (d/db conn))
+        _ (log/debug "found execution errors: " errors)]
+    (empty? errors)))

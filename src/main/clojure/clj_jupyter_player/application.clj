@@ -59,7 +59,7 @@
             (notebook/execute-loaded conn)
             (with-open [w (io/writer notebook-output-file)]
               (json/write (notebook/render conn notebook) w))
-            0))))))
+            (if (notebook/success? conn) 0 1)))))))
 
 (defn app
   ([tmp-dir notebook-file notebook-output-file preload-notebook-file update-preload-index]
