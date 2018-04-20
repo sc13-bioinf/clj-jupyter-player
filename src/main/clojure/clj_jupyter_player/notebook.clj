@@ -5,7 +5,25 @@
             [clojure.java.io :as io]
             [taoensso.timbre :as log]
             [datascript.core :as d]
-            [clj-jupyter-player.util :as util]))
+            [clojure.tools.nrepl :as nrepl]
+            [clj-jupyter-player.util :as util]
+            [clojure.edn :as edn])
+  (:import [java.util Date UUID]))
+
+(defn stacktrace-string
+  "Return a nicely formatted string."
+  [msg]
+  (when-let [st (:stacktrace msg)]
+    (let [clean (->> st
+                     (filter (fn [f] (not-any? #(= "dup" %) (:flags f))))
+                     (filter (fn [f] (not-any? #(= "tooling" %) (:flags f))))
+                     (filter (fn [f] (not-any? #(= "repl" %) (:flags f))))
+                     (filter :file))
+          max-file (apply max (map count (map :file clean)))
+          max-name (apply max (map count (map :name clean)))]
+      (map #(format (str "%" max-file "s: %5d %-" max-name "s")
+                    (:file %) (:line %) (:name %))
+           clean))))
 
 (defn execute-notebook
   [conn notebook]
@@ -14,20 +32,69 @@
                      [:db/add [:db/ident :notebook] :notebook/nbformat-minor (get notebook "nbformat_minor")]]))
 
 (defn execute-cell
-  [conn shell-channel cell]
-  (let [cell-type (get cell "cell_type")
+  [conn cell nrepl-client nrepl-session exec-counter]
+  (let [pending (atom #{})
+        output-texts (atom [])
+        result (atom {})
+        cell-type (get cell "cell_type")
         source (get cell "source")
         tx-result (d/transact! conn [[:db/add -1 :notebook.cell/type cell-type]
                                      [:db/add -1 :notebook.cell/empty? (empty? source)]
                                      [:db/add -1 :notebook.cell/source source]
                                      [:db/add -1 :notebook.cell/metadata (get cell "metadata")]
                                      [:db/add [:db/ident :notebook] :notebook/cells -1]])
-        cell-eid (get (:tempids tx-result) -1)]
-    (if (and (= cell-type "code")
+        cell-eid (get (:tempids tx-result) -1)
+        done? (fn [{:keys [id status] :as msg} pending]
+                (let [pending? (@pending id)]
+                  (swap! pending disj id)
+                    (and pending? (some #{"interrupted" "done" "error"} status))))]
+    (when (and (= cell-type "code")
              (not (empty? source)))
-        (async/>!! shell-channel {:command :send
-                                  :cell-eid cell-eid
-                                  :source source}))))
+        (let [msg-id (UUID/randomUUID)
+              _ (log/debug {:command :send
+                            :cell-eid cell-eid
+                            :source source})
+              _ (d/transact! conn [[:db/add -1 :jupyter/msg-id msg-id]
+                                   [:db/add -1 :jupyter.player/sent (Date.)]
+                                   [:db/add cell-eid :notebook.cell.player/execute-request -1]])
+              _ (swap! pending conj cell-eid)
+              _ (swap! exec-counter inc)]
+          (doseq [{:keys [ns out err status session ex value] :as msg}
+            (nrepl/message nrepl-client {:id cell-eid
+                                             :op "eval"
+                                             :code (str (string/join "" source) "\n")
+                                             :session nrepl-session})
+                :while (not (done? msg pending))]
+            (log/debug "nrepl result: " msg)
+            (when-not (nil? ex)
+              (swap! result assoc :ename ex))
+            (when-not (nil? out)
+              (swap! output-texts conj out))
+            (when-not (nil? err)
+              (swap! output-texts conj err))
+            (when-not (nil? value)
+              (d/transact! conn (conj (vec (util/tx-data-from-map -1 {:jupyter.response/execution-count @exec-counter
+                                                                      :jupyter.response/data (if (= value "nil") nil (json/read-str value))
+                                                                      :jupyter.response/metadata {}
+                                                                   }))
+                                      [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]))))
+         (when-not (empty? @output-texts)
+            (d/transact! conn [[:db/add -1 :jupyter.response/stream {"name" "stdout"
+                                                                     "text" @output-texts}]
+                               [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]]))
+          (when (contains? @result :ename)
+            (let [traceback (if (re-find #"StackOverflowError" (:ename @result))
+                              []
+                              (stacktrace-string (-> nrepl-client
+                                                     (nrepl/message {:op :stacktrace
+                                                                     :session nrepl-session})
+                                                     nrepl/combine-responses
+                                                     doall)))]
+              (d/transact! conn (conj (vec (util/tx-data-from-map -1 {:jupyter.response/execution-count @exec-counter
+                                                                      :jupyter.response/ename (:ename @result)
+                                                                      :jupyter.response/evalue ""
+                                                                      :jupyter.response/traceback traceback}))
+                                      [:db/add [:jupyter/msg-id msg-id] :jupyter/response -1]))))))))
 
 (defn execute-loaded
   [conn]
@@ -48,7 +115,7 @@
     (cond
       (contains? response :jupyter.response/stream) (assoc (:jupyter.response/stream response) "output_type" "stream")
       (contains? response :jupyter.response/data) {"output_type" "display_data"
-                                                   "data" (util/edn->json (:jupyter.response/data response))
+                                                   "data" (:jupyter.response/data response);;(util/edn->json (:jupyter.response/data response))
                                                    "metadata" (:jupyter.response/metadata response)}
       (contains? response :jupyter.response/ename) {"output_type" "error"
                                                     "ename" (:jupyter.response/ename response)
@@ -62,15 +129,26 @@
    "source" (:notebook.cell/source cell)
    "metadata" (:notebook.cell/metadata cell)})
 
+(defn drop-text-plain
+  [accumulator item]
+  (if (-> item :jupyter.response/data (contains? "text/plain"))
+    (if (:seen accumulator)
+      accumulator
+      (-> accumulator
+          (assoc :seen true)
+          (update :result conj item)))
+    (update accumulator :result conj item)))
+
 (defn render-cell-output
   [conn cell]
   (if-let [request-eid (-> cell :notebook.cell.player/execute-request :db/id)]
     (if-let[responses (:jupyter/response (d/pull @conn '[{:jupyter/response [*]}] request-eid))]
       (let [sorted-responses (sort-responses conn request-eid responses)
             _ (log/debug "sorted-responses: " sorted-responses)
-            execution-count (:jupyter.response/execution-count (last (filter #(contains? % :jupyter.response/execution-count) sorted-responses)))
+            filtered-responses (reverse (:result (reduce drop-text-plain {:seen false :result []} (reverse sorted-responses))))
+            execution-count (:jupyter.response/execution-count (last (filter #(contains? % :jupyter.response/execution-count) filtered-responses)))
             _ (log/debug "execution-count: " execution-count)
-            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream :jupyter.response/data :jupyter.response/ename} (keys %))) sorted-responses))]
+            output-responses (vec (remove #(nil? (some #{:jupyter.response/stream :jupyter.response/data :jupyter.response/ename} (keys %))) filtered-responses))]
         (assoc (render-cell-default cell) "execution_count" execution-count
                                           "outputs" (render-output-responses output-responses)))
       (assoc (render-cell-default cell) "execution_count" nil "outputs" []))
