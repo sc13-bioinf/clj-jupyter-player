@@ -1,4 +1,4 @@
-(defproject clj-jupyter-player "0.0.14"
+(defproject clj-jupyter-player-broken "0.0.14"
   :description "A standalone player for Jupyter Notebooks."
   :url "https://github.com/sc13-bioinf/clj-jupyter-player.git"
   :license {:name "Eclipse Public License"
